@@ -9433,6 +9433,39 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // Qwen3.6-27B Q8_0 tensor-parallel decode shapes (four equal GPUs).
+    for (const auto & [m, k] : std::initializer_list<std::pair<int, int>>{
+            {  256,  5120}, // attention K/V
+            { 1280,  6144}, // attention / SSM output
+            { 1280, 17408}, // FFN down
+            { 1536,  5120}, // GDN gate
+            { 2560,  5120}, // GDN QKV
+            { 3072,  5120}, // attention Q
+            { 4352,  5120}, // FFN gate/up
+            {62080,  5120}, // vocabulary projection
+        }) {
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, m, 1, k, {1, 1}, {1, 1}));
+    }
+
+    // P2: batch>1 variants of the same TP decode shapes. Under MTP self-speculation
+    // the verify forward runs at ncols_dst = spec_draft_n_max + 1 (=5 for n-max 4),
+    // which is 58.8% of decode GPU time (nsys mtp-attribution-20260714) yet runs
+    // generic (untuned) MMVQ launch params. n=2..8 also covers tree-MTP (P9).
+    for (const auto & [m, k] : std::initializer_list<std::pair<int, int>>{
+            {  256,  5120}, // attention K/V
+            { 1280,  6144}, // attention / SSM output
+            { 1280, 17408}, // FFN down
+            { 1536,  5120}, // GDN gate
+            { 2560,  5120}, // GDN QKV
+            { 3072,  5120}, // attention Q
+            { 4352,  5120}, // FFN gate/up
+            {62080,  5120}, // vocabulary projection
+        }) {
+        for (int n : {2, 3, 4, 5, 6, 7, 8}) {
+            test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}));
+        }
+    }
+
     // qwen3-30b-a3b
     for (int bs : {1, 4, 8, 32, 64, 128, 256, 512}) {
         for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ2_XS}) {
