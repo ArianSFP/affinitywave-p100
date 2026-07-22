@@ -444,9 +444,9 @@ struct moe_plan_ws {
     size_t    total()       { return 2*e_cap + 2 + 3*tile_cap() + 2*a_cap; }
 };
 
-bool ggml_cuda_moe_mul_mat_id_plan(
-        ggml_backend_cuda_context & ctx, ggml_tensor * dst, int32_t expert_base,
-        bool moe_ep, const char * src0_data, cudaStream_t stream) {
+// shared eligibility: env + shape/stride constraints. Used by the runtime
+// entry AND the graph-compatibility predicate - keep them in lockstep.
+static bool moe_plan_dst_eligible(const ggml_tensor * dst) {
     static const bool moe_plan = getenv("GGML_CUDA_MOE_PLAN") != nullptr;
     // host-inspection debug paths need the host sort - fall through to it
     static const bool host_dbg = getenv("GGML_CUDA_MOE_HIST") != nullptr
@@ -456,11 +456,9 @@ bool ggml_cuda_moe_mul_mat_id_plan(
     }
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
-    const ggml_tensor * ids  = dst->src[2];
 
     const int64_t ne00 = src0->ne[0], ne0 = src0->ne[1], n_experts = src0->ne[2];
-    const int64_t ne11 = src1->ne[1], ne12 = src1->ne[2];
-    const int64_t neu  = ids->ne[0];
+    const int64_t ne11 = src1->ne[1];
     if (src0->type != GGML_TYPE_Q8_0 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32 ||
         ne00 % MOE_GEMM_KSTAGE != 0 || ne0 % 64 != 0 ||
         n_experts > MOE_PLAN_MAX_EXPERTS || src1->nb[0] != sizeof(float) ||
@@ -468,6 +466,33 @@ bool ggml_cuda_moe_mul_mat_id_plan(
         ne00 % 8 != 0) {
         return false;
     }
+    return true;
+}
+
+// [TAG_MOE_PLAN_GRAPHS] A7 graph-compatibility predicate. Extra blockers on
+// top of runtime eligibility: PLAN_CHECK syncs inside the plan path, and
+// ASYNCEP can divert calls to the host path at runtime - both would fire a
+// sync during capture, so they keep graphs off entirely.
+bool ggml_cuda_moe_plan_node_supported(const ggml_tensor * node) {
+    static const bool plan_graphs = getenv("GGML_CUDA_MOE_PLAN_GRAPHS") != nullptr
+                                 && getenv("GGML_CUDA_MOE_PLAN_CHECK") == nullptr
+                                 && getenv("GGML_CUDA_MOE_ASYNCEP") == nullptr;
+    return plan_graphs && moe_plan_dst_eligible(node);
+}
+
+bool ggml_cuda_moe_mul_mat_id_plan(
+        ggml_backend_cuda_context & ctx, ggml_tensor * dst, int32_t expert_base,
+        bool moe_ep, const char * src0_data, cudaStream_t stream) {
+    if (!moe_plan_dst_eligible(dst)) {
+        return false;
+    }
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const ggml_tensor * ids  = dst->src[2];
+
+    const int64_t ne00 = src0->ne[0], ne0 = src0->ne[1], n_experts = src0->ne[2];
+    const int64_t ne11 = src1->ne[1], ne12 = src1->ne[2];
+    const int64_t neu  = ids->ne[0];
 
     const int64_t n_assign = ne12 * neu;   // == ne_get_rows (shape-static)
     const size_t  a_stride = src1->nb[1] / sizeof(float);
@@ -478,6 +503,11 @@ bool ggml_cuda_moe_mul_mat_id_plan(
     const int slot = ctx.curr_stream_no < 2 ? ctx.curr_stream_no : 0;
     moe_plan_ws & ws = ws_arr[dev][slot];
     if (ws.device != dev || ws.a_cap < (size_t) n_assign || ws.e_cap < (size_t) n_experts) {
+        // growth only ever happens on the first (uncaptured, warmup) eval at a
+        // given shape; a realloc during capture would deadlock/abort on the sync
+        cudaStreamCaptureStatus cap = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamIsCapturing(stream, &cap));
+        GGML_ASSERT(cap == cudaStreamCaptureStatusNone && "moe-plan workspace growth during graph capture");
         if (ws.buf != nullptr) {
             CUDA_CHECK(cudaStreamSynchronize(stream));   // fence in-flight users; realloc is rare (growth only)
             CUDA_CHECK(cudaFree(ws.buf));

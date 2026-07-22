@@ -37,3 +37,10 @@ bool ggml_cuda_moe_mul_mat_id_plan(
     bool            moe_ep,             // EP mode (non-local ids -> zero row)
     const char    * src0_data,          // this device's expert weights (Q8_0)
     cudaStream_t    stream);
+
+// [TAG_MOE_PLAN_GRAPHS] A7: true when the plan path WILL handle this
+// MUL_MAT_ID node sync-free AND graph capture is opted in (env
+// GGML_CUDA_MOE_PLAN_GRAPHS). Must mirror the runtime engagement exactly:
+// if this returns true but the runtime falls back to the host path, a
+// stream sync fires during capture and aborts the process.
+bool ggml_cuda_moe_plan_node_supported(const ggml_tensor * node);

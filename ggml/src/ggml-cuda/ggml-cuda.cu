@@ -4204,10 +4204,14 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
                 // under these conditions, the mul_mat_id operation will need to synchronize the stream, so we cannot use CUDA graphs
                 // TODO: figure out a way to enable for larger batch sizes, without hurting performance
                 // ref: https://github.com/ggml-org/llama.cpp/pull/18958
-                use_cuda_graph = false;
+                // [TAG_MOE_PLAN_GRAPHS] A7: the device-plan path handles the large-batch
+                // case fully async (no D2H, no sync) - capture is safe when it engages.
+                if (!ggml_cuda_moe_plan_node_supported(node)) {
+                    use_cuda_graph = false;
 #ifndef NDEBUG
-                GGML_LOG_DEBUG("%s: disabling CUDA graphs due to unsupported node type\n", __func__);
+                    GGML_LOG_DEBUG("%s: disabling CUDA graphs due to unsupported node type\n", __func__);
 #endif
+                }
             }
         }
 
