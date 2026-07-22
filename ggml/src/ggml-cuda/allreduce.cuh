@@ -27,3 +27,8 @@ bool ggml_cuda_ar_allreduce(
     ggml_backend_t        * backends,
     ggml_tensor           ** tensors);
 
+
+// [TAG_AR_P2P] peer-DMA permutation-round allreduce for large F32 tensors on
+// 4 fully-connected P2P devices (env GGML_CUDA_AR_P2P=1 + size threshold in
+// the dispatcher). Returns false if shape/type/device-count ineligible.
+bool ggml_cuda_ar_allreduce_p2p(ggml_backend_t * backends, ggml_tensor ** tensors, int n_devices);

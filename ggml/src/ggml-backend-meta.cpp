@@ -1353,12 +1353,13 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     // existing slicing logic (any split mode) sees a plain reordered tensor.
     std::vector<char> eplb_tmp;
     {
+        // scratch permute for the SMALL router tensor only (ffn_gate_inp, ~2MB);
+        // the large *_exps tensors are gathered per expert in the AXIS_2 branch
+        // below with NO staging (a full-tensor scratch OOM-killed the --no-mmap
+        // server load: model already fills host RAM).
         int axis = -1;
         const std::vector<int32_t> * perm = nullptr;
-        if (tensor->ne[2] > 1) {
-            perm = ggml_backend_meta_eplb_perm(tensor->name, tensor->ne[2], &axis);
-        }
-        if (perm == nullptr && tensor->ne[2] == 1) {
+        if (tensor->ne[2] == 1) {
             perm = ggml_backend_meta_eplb_perm(tensor->name, tensor->ne[1], &axis);
         }
         if (perm != nullptr) {
@@ -1445,6 +1446,29 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
             const size_t chunk_size_full = tensor->nb[split_state.axis + 1];
             GGML_ASSERT(offset % chunk_size_full == 0);
             GGML_ASSERT(size   % chunk_size_full == 0);
+            // [TAG_MOE_EPLB] expert-axis permutation: gather source experts per
+            // device slot straight from the loader buffer (no host staging).
+            if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_2 && tensor->ne[2] > 1) {
+                int eplb_axis = -1;
+                const std::vector<int32_t> * perm = ggml_backend_meta_eplb_perm(tensor->name, tensor->ne[2], &eplb_axis);
+                if (perm != nullptr) {
+                    GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor));
+                    const size_t exp_bytes = tensor->nb[2];
+                    int64_t slot0 = 0;
+                    for (size_t j = 0; j < n_bufs; j++) {
+                        ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
+                        const int64_t ne2j = simple_tensor->ne[2];
+                        for (int64_t sl = 0; sl < ne2j; sl++) {
+                            ggml_backend_tensor_set(simple_tensor,
+                                (const char *) data + (size_t) (*perm)[slot0 + sl]*exp_bytes,
+                                (size_t) sl*exp_bytes, exp_bytes);
+                        }
+                        slot0 += ne2j;
+                    }
+                    GGML_ASSERT(slot0 == tensor->ne[2]);
+                    break;
+                }
+            }
             const int64_t i_start =  offset        /chunk_size_full;
             const int64_t i_stop  = (offset + size)/chunk_size_full;
             size_t offset_j = 0;

@@ -969,3 +969,141 @@ bool ggml_cuda_ar_allreduce(ggml_cuda_ar_pipeline *, ggml_backend_t *, ggml_tens
 }
 
 #endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+
+// ---------------------------------------------------------------------------
+// [TAG_AR_P2P] peer-DMA permutation-round allreduce (env GGML_CUDA_AR_P2P=1).
+// Copy engines move a bf16 wire copy peer-to-peer (measured: 12.5 GB/s per
+// link full-duplex with all 4 GPUs sending, ZERO SM contention) instead of
+// NCCL's SM-resident ring (9.9 GB/s busbw). Reduce-scatter: each device
+// sends its 3 foreign bf16 shards into the owners' inboxes; owner sums
+// 4 bf16 shards in f32 (ONE rounding - fewer than the NCCL bf16 ring),
+// writes its own f32 slice + a reduced bf16 shard in place; allgather:
+// owners DMA reduced shards directly into peers' wire buffers (dead slots -
+// ordered race-free by the event chain); receivers convert to f32.
+// Synchronization: host-serial enqueue + cross-device cudaStreamWaitEvent
+// only - no flags, no peer atomics (unsupported on P100 PCIe anyway).
+// NOT byte-identical to NCCL (reduction order + single rounding) -> ppl gate.
+
+struct ggml_cuda_ar_p2p_state {
+    bool          ready = false;
+    size_t        cap   = 0;   // elems capacity of wire buffers
+    nv_bfloat16 * wire [GGML_CUDA_MAX_DEVICES]          = {};
+    nv_bfloat16 * inbox[GGML_CUDA_MAX_DEVICES][3]       = {};
+    cudaEvent_t   ev_rs [GGML_CUDA_MAX_DEVICES]         = {};
+    cudaEvent_t   ev_red[GGML_CUDA_MAX_DEVICES]         = {};
+};
+
+static __global__ void ggml_cuda_ar_p2p_reduce4(
+        const nv_bfloat16 * __restrict__ own, const nv_bfloat16 * __restrict__ a,
+        const nv_bfloat16 * __restrict__ b,   const nv_bfloat16 * __restrict__ c,
+        nv_bfloat16 * __restrict__ red_out, float * __restrict__ f32_out, int64_t n) {
+    for (int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x*blockDim.x) {
+        const float v = (float) own[i] + (float) a[i] + (float) b[i] + (float) c[i];
+        f32_out[i] = v;
+        red_out[i] = (nv_bfloat16) v;
+    }
+}
+
+bool ggml_cuda_ar_allreduce_p2p(ggml_backend_t * backends, ggml_tensor ** tensors, int n_devices) {
+    static ggml_cuda_ar_p2p_state st;
+    if (n_devices != 4) {
+        return false;
+    }
+    const int64_t ne = ggml_nelements(tensors[0]);
+    if (ne == 0) {
+        return true;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (tensors[i]->type != GGML_TYPE_F32 || !ggml_is_contiguously_allocated(tensors[i]) ||
+            ggml_nelements(tensors[i]) != ne) {
+            return false;
+        }
+    }
+    ggml_backend_cuda_context * ctx[4];
+    cudaStream_t                strm[4];
+    for (int i = 0; i < 4; ++i) {
+        ctx[i]  = (ggml_backend_cuda_context *) backends[i]->context;
+        strm[i] = ctx[i]->stream();
+    }
+    // shard boundaries (remainder spread over the first shards)
+    int64_t off[5] = {0};
+    for (int s = 0; s < 4; ++s) {
+        off[s + 1] = off[s] + ne/4 + (s < ne % 4 ? 1 : 0);
+    }
+    if (!st.ready || st.cap < (size_t) ne) {
+        for (int i = 0; i < 4; ++i) {
+            ggml_cuda_set_device(ctx[i]->device);
+            CUDA_CHECK(cudaStreamSynchronize(strm[i]));   // growth fence (rare)
+            if (st.wire[i]) { CUDA_CHECK(cudaFree(st.wire[i])); }
+            for (int k = 0; k < 3; ++k) {
+                if (st.inbox[i][k]) { CUDA_CHECK(cudaFree(st.inbox[i][k])); }
+            }
+            CUDA_CHECK(cudaMalloc((void **) &st.wire[i], (size_t) ne*sizeof(nv_bfloat16)));
+            const size_t shard_max = (size_t) (ne/4 + 1);
+            for (int k = 0; k < 3; ++k) {
+                CUDA_CHECK(cudaMalloc((void **) &st.inbox[i][k], shard_max*sizeof(nv_bfloat16)));
+            }
+            if (!st.ready) {
+                CUDA_CHECK(cudaEventCreateWithFlags(&st.ev_rs[i],  cudaEventDisableTiming));
+                CUDA_CHECK(cudaEventCreateWithFlags(&st.ev_red[i], cudaEventDisableTiming));
+            }
+        }
+        st.cap = ne;
+        st.ready = true;
+    }
+
+    to_bf16_cuda_t to_bf16 = ggml_get_to_bf16_cuda(GGML_TYPE_F32);
+    to_fp32_cuda_t to_f32  = ggml_get_to_fp32_cuda(GGML_TYPE_BF16);
+
+    // stage 1: local bf16 wire copy + reduce-scatter sends (copy engines).
+    // Devices whose boundary tensor was NOT computed (no GGML_TENSOR_FLAG_COMPUTE)
+    // contribute ZEROS - same semantics as the NCCL wrapper's inactive-shard
+    // memset; summing their uninitialized data was the degenerate-logits bug.
+    for (int i = 0; i < 4; ++i) {
+        ggml_cuda_set_device(ctx[i]->device);
+        if (tensors[i]->flags & GGML_TENSOR_FLAG_COMPUTE) {
+            to_bf16(tensors[i]->data, st.wire[i], ne, strm[i]);
+        } else {
+            CUDA_CHECK(cudaMemsetAsync(st.wire[i], 0, (size_t) ne*sizeof(nv_bfloat16), strm[i]));
+        }
+        for (int r = 1; r <= 3; ++r) {
+            const int j = (i + r) & 3;                    // owner of shard j
+            const int slot = (i - j - 1) & 3;             // 0..2, unique per sender at owner j
+            CUDA_CHECK(cudaMemcpyPeerAsync(st.inbox[j][slot >= 3 ? 2 : slot], ctx[j]->device,
+                st.wire[i] + off[j], ctx[i]->device,
+                (size_t) (off[j + 1] - off[j])*sizeof(nv_bfloat16), strm[i]));
+        }
+        CUDA_CHECK(cudaEventRecord(st.ev_rs[i], strm[i]));
+    }
+    // stage 2: owners reduce (f32 accumulate, one rounding) + allgather sends
+    for (int j = 0; j < 4; ++j) {
+        ggml_cuda_set_device(ctx[j]->device);
+        for (int i = 0; i < 4; ++i) {
+            if (i != j) { CUDA_CHECK(cudaStreamWaitEvent(strm[j], st.ev_rs[i], 0)); }
+        }
+        const int64_t sn = off[j + 1] - off[j];
+        const int blocks = (int) std::min<int64_t>((sn + 255)/256, 512);
+        ggml_cuda_ar_p2p_reduce4<<<blocks, 256, 0, strm[j]>>>(
+            st.wire[j] + off[j], st.inbox[j][0], st.inbox[j][1], st.inbox[j][2],
+            st.wire[j] + off[j], (float *) tensors[j]->data + off[j], sn);
+        CUDA_CHECK(cudaGetLastError());
+        for (int r = 1; r <= 3; ++r) {
+            const int i = (j + r) & 3;
+            CUDA_CHECK(cudaMemcpyPeerAsync(st.wire[i] + off[j], ctx[i]->device,
+                st.wire[j] + off[j], ctx[j]->device, (size_t) sn*sizeof(nv_bfloat16), strm[j]));
+        }
+        CUDA_CHECK(cudaEventRecord(st.ev_red[j], strm[j]));
+    }
+    // stage 3: receivers wait + convert foreign reduced shards to f32
+    for (int i = 0; i < 4; ++i) {
+        ggml_cuda_set_device(ctx[i]->device);
+        for (int j = 0; j < 4; ++j) {
+            if (j != i) { CUDA_CHECK(cudaStreamWaitEvent(strm[i], st.ev_red[j], 0)); }
+        }
+        for (int j = 0; j < 4; ++j) {
+            if (j == i) { continue; }
+            to_f32(st.wire[i] + off[j], (float *) tensors[i]->data + off[j], off[j + 1] - off[j], strm[i]);
+        }
+    }
+    return true;
+}

@@ -1374,6 +1374,20 @@ static bool ggml_backend_cuda_comm_allreduce_internal(
 #ifdef GGML_USE_NCCL
 static bool ggml_backend_cuda_comm_try_allreduce_nccl(
         ggml_backend_cuda_comm_context * comm_ctx, struct ggml_tensor ** tensors) {
+    // [TAG_AR_P2P] copy-engine permutation-round allreduce for LARGE f32 tensors
+    // (prefill boundaries; decode's 8KB stays on NCCL). Off-SM transport at the
+    // measured 12.5 GB/s duplex wire vs NCCL's 9.9 GB/s SM-resident ring.
+    static const size_t p2p_threshold = [](){
+        const char * s2 = getenv("GGML_CUDA_AR_P2P");
+        if (s2 == nullptr) { return (size_t) 0; }
+        const char * t = getenv("GGML_CUDA_AR_P2P_THRESHOLD");
+        return t != nullptr ? (size_t) atoll(t) : (size_t) (4u << 20);
+    }();
+    if (p2p_threshold != 0 && comm_ctx->backends.size() == 4 &&
+        ggml_nbytes(tensors[0]) >= p2p_threshold &&
+        ggml_cuda_ar_allreduce_p2p(comm_ctx->backends.data(), tensors, 4)) {
+        return true;
+    }
     return ggml_backend_cuda_comm_allreduce_nccl(comm_ctx, tensors);
 }
 #endif // GGML_USE_NCCL
