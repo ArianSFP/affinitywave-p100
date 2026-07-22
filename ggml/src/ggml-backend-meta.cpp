@@ -2443,6 +2443,12 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
         backend_ctx->comm_ctx != nullptr && backend_ctx->comm_allreduce_single != nullptr &&
         backend_ctx->comm_allreduce_single(backend_ctx->comm_ctx, nullptr, 0); // availability probe
     if (use_spmd) {
+        static std::atomic<bool> spmd_logged{false};
+        if (!spmd_logged.exchange(true)) {
+            // WARN not INFO: the completion/server frontends filter ggml INFO from stderr,
+            // and gate scripts key on this line to prove the mode actually engaged.
+            GGML_LOG_WARN("%s: [TAG_META_SUBMIT] SPMD mode engaged (per-device subgraph loops + per-comm allreduce)\n", __func__);
+        }
         static const bool dbg_ar = getenv("GGML_META_DEBUG_ALLREDUCE") != nullptr;
         const std::function<ggml_status(size_t)> spmd_job = [&](size_t j) -> ggml_status {
             auto & bcj = backend_ctx->backend_configs[j];
