@@ -1170,11 +1170,22 @@ struct ggml_backend_cuda_comm_context {
 
 #ifdef GGML_USE_NCCL
     std::vector<ncclComm_t>     comms;
+    std::vector<ncclComm_t>     comms_tbo; // [TAG_META_TBO] slot-1 comm set (stream alternation)
+
+    // [TAG_META_TBO] comm for backend i honoring the device's active stream slot
+    ncclComm_t comm_for(size_t i, int stream_no) const {
+        // debug: force the primary comm for both slots (correct ONLY with GGML_META_TBO_SERIAL)
+        static const bool onecomm = getenv("GGML_META_TBO_ONECOMM") != nullptr;
+        return stream_no == 1 && !comms_tbo.empty() && !onecomm ? comms_tbo[i] : comms[i];
+    }
 #endif // GGML_USE_NCCL
 
     ~ggml_backend_cuda_comm_context() {
 #ifdef GGML_USE_NCCL
         for (ncclComm_t comm : comms) {
+            NCCL_CHECK(ncclCommDestroy(comm));
+        }
+        for (ncclComm_t comm : comms_tbo) {
             NCCL_CHECK(ncclCommDestroy(comm));
         }
 #endif // GGML_USE_NCCL
@@ -1215,7 +1226,7 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
         NCCL_CHECK(ncclGroupStart());
         for (size_t i = 0; i < n_backends; ++i) {
             ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[i]->context;
-            NCCL_CHECK(ncclAllReduce(tensors[i]->data, tensors[i]->data, ne, ncclFloat, ncclSum, comm_ctx->comms[i], cuda_ctx->stream()));
+            NCCL_CHECK(ncclAllReduce(tensors[i]->data, tensors[i]->data, ne, ncclFloat, ncclSum, comm_ctx->comm_for(i, cuda_ctx->curr_stream_no), cuda_ctx->stream()));
         }
         NCCL_CHECK(ncclGroupEnd());
         return true;
@@ -1243,7 +1254,7 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
     NCCL_CHECK(ncclGroupStart());
     for (size_t i = 0; i < n_backends; ++i) {
         ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[i]->context;
-        NCCL_CHECK(ncclAllReduce(tmp[i].get(), tmp[i].get(), ne, ncclBfloat16, ncclSum, comm_ctx->comms[i], cuda_ctx->stream()));
+        NCCL_CHECK(ncclAllReduce(tmp[i].get(), tmp[i].get(), ne, ncclBfloat16, ncclSum, comm_ctx->comm_for(i, cuda_ctx->curr_stream_no), cuda_ctx->stream()));
     }
     NCCL_CHECK(ncclGroupEnd());
 
@@ -1279,7 +1290,7 @@ static bool ggml_backend_cuda_comm_allreduce_nccl_single(
         if ((tensor->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
             CUDA_CHECK(cudaMemsetAsync(tensor->data, 0, ggml_nbytes(tensor), cuda_ctx->stream()));
         }
-        NCCL_CHECK(ncclAllReduce(tensor->data, tensor->data, ne, ncclFloat, ncclSum, comm_ctx->comms[idx], cuda_ctx->stream()));
+        NCCL_CHECK(ncclAllReduce(tensor->data, tensor->data, ne, ncclFloat, ncclSum, comm_ctx->comm_for(idx, cuda_ctx->curr_stream_no), cuda_ctx->stream()));
         return true;
     }
 
@@ -1295,7 +1306,7 @@ static bool ggml_backend_cuda_comm_allreduce_nccl_single(
     }
     CUDA_CHECK(cudaGetLastError());
 
-    NCCL_CHECK(ncclAllReduce(tmp.get(), tmp.get(), ne, ncclBfloat16, ncclSum, comm_ctx->comms[idx], cuda_ctx->stream()));
+    NCCL_CHECK(ncclAllReduce(tmp.get(), tmp.get(), ne, ncclBfloat16, ncclSum, comm_ctx->comm_for(idx, cuda_ctx->curr_stream_no), cuda_ctx->stream()));
 
     to_fp32(tmp.get(), (float *) tensor->data, ne, cuda_ctx->stream());
     CUDA_CHECK(cudaGetLastError());
@@ -1412,6 +1423,20 @@ static void ggml_backend_cuda_comm_init_nccl(ggml_backend_cuda_comm_context * re
     ncclResult_t rc = ncclCommInitAll(ret->comms.data(), (int) n, ret->dev_ids.data());
     if (rc == ncclSuccess) {
         ret->try_allreduce = ggml_backend_cuda_comm_try_allreduce_nccl;
+        // [TAG_META_TBO] a SECOND comm set for stream slot 1: NCCL relies on stream ordering
+        // per communicator, so collectives from two in-flight evals on two streams must use
+        // DISTINCT comms or they run concurrently on shared channel state (measured: silent
+        // hidden-state corruption growing over layers). One comm set per stream slot, both
+        // over the same ranks; cross-comm concurrency is legal.
+        if (getenv("GGML_META_TBO") != nullptr) {
+            ret->comms_tbo.resize(n);
+            ncclResult_t rc2 = ncclCommInitAll(ret->comms_tbo.data(), (int) n, ret->dev_ids.data());
+            if (rc2 != ncclSuccess) {
+                ret->comms_tbo.clear();
+                GGML_LOG_WARN("NCCL TBO comm init failed (%s); TBO evals will be rejected\n",
+                              ncclGetErrorString(rc2));
+            }
+        }
         return;
     }
 
@@ -1499,6 +1524,86 @@ static bool ggml_backend_cuda_comm_allreduce_tensor_single(void * comm_ctx_v, st
 #else
     GGML_UNUSED(tensor);
     GGML_UNUSED(backend_idx);
+    return false;
+#endif // GGML_USE_NCCL
+}
+
+// [TAG_MOE_ASYNCEP] AllGather of contiguous equal token slices: rank r owns elements
+// [r*ne/n, (r+1)*ne/n) of the boundary tensor and every rank ends with the full tensor.
+// Pure data movement in FP32 (no bf16 round-trip: values stay exact, unlike the
+// summing allreduce there is nothing to compress against). NCCL-only; tensor == NULL
+// probes availability. In-place send/recv per the documented NCCL in-place form.
+static bool ggml_backend_cuda_comm_allgather_tensor_single(void * comm_ctx_v, struct ggml_tensor * tensor, int backend_idx) {
+    if (comm_ctx_v == nullptr) {
+        return false;
+    }
+    auto * comm_ctx = static_cast<ggml_backend_cuda_comm_context *>(comm_ctx_v);
+#ifdef GGML_USE_NCCL
+    if (comm_ctx->try_allreduce != ggml_backend_cuda_comm_try_allreduce_nccl) {
+        return false;
+    }
+    if (tensor == nullptr) {
+        return true; // availability probe
+    }
+    const int64_t ne = ggml_nelements(tensor);
+    if (ne == 0) {
+        return true;
+    }
+    const size_t n_backends = comm_ctx->backends.size();
+    GGML_ASSERT(tensor->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguously_allocated(tensor));
+    GGML_ASSERT(ne % (int64_t) n_backends == 0);
+    const int64_t slice = ne / (int64_t) n_backends;
+
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[backend_idx]->context;
+    ggml_cuda_set_device(cuda_ctx->device);
+    NCCL_CHECK(ncclAllGather((const char *) tensor->data + (size_t) backend_idx*slice*sizeof(float),
+        tensor->data, slice, ncclFloat, comm_ctx->comm_for(backend_idx, cuda_ctx->curr_stream_no), cuda_ctx->stream()));
+    return true;
+#else
+    GGML_UNUSED(tensor);
+    GGML_UNUSED(backend_idx);
+    return false;
+#endif // GGML_USE_NCCL
+}
+
+// [TAG_MOE_ASYNCEP] Grouped variant for the single-submit-thread path. tensors == NULL
+// probes availability.
+static bool ggml_backend_cuda_comm_allgather_tensor(void * comm_ctx_v, struct ggml_tensor ** tensors) {
+    if (comm_ctx_v == nullptr) {
+        return false;
+    }
+    auto * comm_ctx = static_cast<ggml_backend_cuda_comm_context *>(comm_ctx_v);
+#ifdef GGML_USE_NCCL
+    if (comm_ctx->try_allreduce != ggml_backend_cuda_comm_try_allreduce_nccl) {
+        return false;
+    }
+    if (tensors == nullptr) {
+        return true; // availability probe
+    }
+    const size_t n_backends = comm_ctx->backends.size();
+    const int64_t ne = ggml_nelements(tensors[0]);
+    if (ne == 0) {
+        return true;
+    }
+    GGML_ASSERT(ne % (int64_t) n_backends == 0);
+    const int64_t slice = ne / (int64_t) n_backends;
+    for (size_t i = 0; i < n_backends; ++i) {
+        GGML_ASSERT(tensors[i] != nullptr);
+        GGML_ASSERT(tensors[i]->type == GGML_TYPE_F32);
+        GGML_ASSERT(ggml_nelements(tensors[i]) == ne);
+        GGML_ASSERT(ggml_is_contiguously_allocated(tensors[i]));
+    }
+    NCCL_CHECK(ncclGroupStart());
+    for (size_t i = 0; i < n_backends; ++i) {
+        ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[i]->context;
+        NCCL_CHECK(ncclAllGather((const char *) tensors[i]->data + i*slice*sizeof(float),
+            tensors[i]->data, slice, ncclFloat, comm_ctx->comm_for(i, cuda_ctx->curr_stream_no), cuda_ctx->stream()));
+    }
+    NCCL_CHECK(ncclGroupEnd());
+    return true;
+#else
+    GGML_UNUSED(tensors);
     return false;
 #endif // GGML_USE_NCCL
 }
@@ -1992,7 +2097,9 @@ static void ggml_cuda_op_mul_mat(
         const bool  dst_on_device = id == dst_ctx->device;
 
         ggml_cuda_set_device(id);
-        cudaStream_t stream = ctx.stream(id, 0);
+        // [TAG_META_TBO] the main device's primary stream must honor the active stream slot
+        // (curr_stream_no == 0 outside TBO, so this is the legacy stream(id, 0) otherwise)
+        cudaStream_t stream = id == ctx.device ? ctx.stream(id, ctx.curr_stream_no) : ctx.stream(id, 0);
 
         if (src0_is_contiguous) {
             dev[id].src0_dd = split ? (char *) src0_extra->data_device[id] : (char *) src0->data;
@@ -2066,7 +2173,8 @@ static void ggml_cuda_op_mul_mat(
             const int64_t row_diff = dev[id].row_high - dev[id].row_low;
 
             ggml_cuda_set_device(id);
-            cudaStream_t stream = ctx.stream(id, is);
+            // [TAG_META_TBO] same active-slot rule as above for the main device's is==0 stream
+            cudaStream_t stream = id == ctx.device && is == 0 ? ctx.stream(id, ctx.curr_stream_no) : ctx.stream(id, is);
 
             // wait for main GPU data if necessary
             if (split && (id != ctx.device || is != 0)) {
@@ -2715,6 +2823,129 @@ static __global__ void k_moe_bgemm_compact(float * __restrict__ dst_packed, cons
     }
 }
 
+// [TAG_MOE_ASYNCEP] P7 AsyncEP (weight-gather EP), prefill-only, env GGML_CUDA_MOE_ASYNCEP.
+// Inverts the EP dataflow for large batches: a rotating per-device buffer is filled in the
+// background with ALL experts of upcoming layers via peer copies (measured 12 GB/s on this
+// rig's PCIe gen3 ring with ZERO contention against concurrent GEMMs - the copy engines and
+// SMs are independent), and each device then computes the FULL top-k FFN for its 1/n_ranks
+// token slice instead of the expert-filtered whole batch. Outputs remain disjoint-support
+// partials (foreign-token rows scatter from ZERO_ROW), so the meta backend's PARTIAL
+// allreduce combine is unchanged and mixed expert/token-slice evals stay correct; token
+// slices are exactly balanced regardless of routing skew (measured 1.24x mean under the
+// expert filter). The meta backend registers the per-rank shard pointers once (weights are
+// static) in graph node order - that order IS the prefetch sequence - and raises the enable
+// flag per graph eval before dispatch (release/acquire pairing with the workers).
+// The prefetch volume per eval is fixed (~26 GB/device for this model), so it only hides
+// inside evals of >= GGML_CUDA_MOE_ASYNCEP_MIN_TOKENS tokens (default 3072): smaller evals
+// keep the expert-filtered path entirely.
+#define GGML_CUDA_ASYNCEP_NSLOTS 6  // 3 expert tensors/layer x 2 layers of lookahead
+struct ggml_cuda_asyncep_entry {
+    const void * shard_data[GGML_CUDA_MAX_DEVICES]; // rank r's shard device pointer
+    size_t       shard_offs[GGML_CUDA_MAX_DEVICES]; // byte offset of rank r's experts in the assembled copy
+    int          dev_of_rank[GGML_CUDA_MAX_DEVICES];
+    size_t       shard_bytes = 0;                   // equal across ranks (n_expert % n_ranks == 0)
+};
+struct ggml_cuda_asyncep_dev {
+    bool         init = false;
+    cudaStream_t copy_stream = nullptr;
+    char *       slots = nullptr;
+    size_t       slot_bytes = 0;
+    int          slot_entry[GGML_CUDA_ASYNCEP_NSLOTS];
+    cudaEvent_t  ev_ready[GGML_CUDA_ASYNCEP_NSLOTS]; // copies of the slot's current entry done
+    cudaEvent_t  ev_done [GGML_CUDA_ASYNCEP_NSLOTS]; // compute finished reading the slot
+};
+static std::vector<ggml_cuda_asyncep_entry>  ggml_cuda_asyncep_entries;
+static std::unordered_map<const void *, int> ggml_cuda_asyncep_lookup;   // any rank's shard ptr -> entry idx
+static int              ggml_cuda_asyncep_rank_of_dev[GGML_CUDA_MAX_DEVICES];
+static int              ggml_cuda_asyncep_n_ranks = 0;
+static std::atomic<int> ggml_cuda_asyncep_enabled{0};
+static ggml_cuda_asyncep_dev ggml_cuda_asyncep_devs[GGML_CUDA_MAX_DEVICES];
+
+// Registered by the meta backend BEFORE the enable flag is raised each eval; idempotent per
+// tensor, insertion order defines the prefetch sequence. shard_data is ordered by comm rank.
+static void ggml_cuda_moe_asyncep_register(const void ** shard_data, const size_t * shard_offs,
+        int n_ranks, size_t shard_bytes) {
+    GGML_ASSERT(n_ranks >= 2 && n_ranks <= GGML_CUDA_MAX_DEVICES);
+    if (ggml_cuda_asyncep_lookup.count(shard_data[0]) != 0) {
+        return;
+    }
+    ggml_cuda_asyncep_entry e;
+    for (int r = 0; r < n_ranks; r++) {
+        cudaPointerAttributes attr;
+        CUDA_CHECK(cudaPointerGetAttributes(&attr, shard_data[r]));
+        e.shard_data[r]  = shard_data[r];
+        e.shard_offs[r]  = shard_offs[r];
+        e.dev_of_rank[r] = attr.device;
+        ggml_cuda_asyncep_rank_of_dev[attr.device] = r;
+    }
+    e.shard_bytes = shard_bytes;
+    const int idx = (int) ggml_cuda_asyncep_entries.size();
+    ggml_cuda_asyncep_entries.push_back(e);
+    for (int r = 0; r < n_ranks; r++) {
+        ggml_cuda_asyncep_lookup[shard_data[r]] = idx;
+    }
+    ggml_cuda_asyncep_n_ranks = n_ranks;
+}
+
+static void ggml_cuda_moe_asyncep_set_enabled(int enabled) {
+    ggml_cuda_asyncep_enabled.store(enabled, std::memory_order_release);
+}
+
+// Enqueue the assembly of one entry into its slot on this device's copy stream. No-op if the
+// slot already holds the entry. The wait on ev_done fences the previous occupant's last read.
+// Only ever called from the thread currently servicing this device (P1 pins one worker per
+// device; single-thread submit serializes) - no locking needed on the per-device state.
+static void ggml_cuda_asyncep_issue(int dev, int entry_idx) {
+    ggml_cuda_asyncep_dev & st = ggml_cuda_asyncep_devs[dev];
+    const ggml_cuda_asyncep_entry & e = ggml_cuda_asyncep_entries[entry_idx];
+    const int slot = entry_idx % GGML_CUDA_ASYNCEP_NSLOTS;
+    if (st.slot_entry[slot] == entry_idx) {
+        return;
+    }
+    CUDA_CHECK(cudaStreamWaitEvent(st.copy_stream, st.ev_done[slot], 0));
+    char * base = st.slots + (size_t) slot*st.slot_bytes;
+    for (int r = 0; r < ggml_cuda_asyncep_n_ranks; r++) {
+        char * dst_r = base + e.shard_offs[r];
+        if (e.dev_of_rank[r] == dev) {
+            CUDA_CHECK(cudaMemcpyAsync(dst_r, e.shard_data[r], e.shard_bytes, cudaMemcpyDeviceToDevice, st.copy_stream));
+        } else {
+            CUDA_CHECK(cudaMemcpyPeerAsync(dst_r, dev, e.shard_data[r], e.dev_of_rank[r], e.shard_bytes, st.copy_stream));
+        }
+    }
+    CUDA_CHECK(cudaEventRecord(st.ev_ready[slot], st.copy_stream));
+    st.slot_entry[slot] = entry_idx;
+}
+
+static ggml_cuda_asyncep_dev & ggml_cuda_asyncep_dev_init(int dev, size_t need_bytes) {
+    ggml_cuda_asyncep_dev & st = ggml_cuda_asyncep_devs[dev];
+    if (!st.init) {
+        CUDA_CHECK(cudaStreamCreateWithFlags(&st.copy_stream, cudaStreamNonBlocking));
+        st.slot_bytes = need_bytes;
+        CUDA_CHECK(cudaMalloc(&st.slots, (size_t) GGML_CUDA_ASYNCEP_NSLOTS*need_bytes));
+        for (int s = 0; s < GGML_CUDA_ASYNCEP_NSLOTS; s++) {
+            st.slot_entry[s] = -1;
+            CUDA_CHECK(cudaEventCreateWithFlags(&st.ev_ready[s], cudaEventDisableTiming));
+            CUDA_CHECK(cudaEventCreateWithFlags(&st.ev_done[s],  cudaEventDisableTiming));
+            // record once so the first WaitEvent on a fresh slot completes immediately
+            CUDA_CHECK(cudaEventRecord(st.ev_done[s], st.copy_stream));
+        }
+        for (int r = 0; r < ggml_cuda_asyncep_n_ranks; r++) {
+            const int peer = ggml_cuda_asyncep_entries[0].dev_of_rank[r];
+            if (peer != dev) {
+                const cudaError_t err = cudaDeviceEnablePeerAccess(peer, 0);
+                if (err != cudaSuccess && err != cudaErrorPeerAccessAlreadyEnabled) {
+                    GGML_LOG_WARN("%s: no P2P dev%d -> dev%d (err %d), prefetch will stage through host\n",
+                        __func__, dev, peer, (int) err);
+                }
+                (void) cudaGetLastError(); // clear sticky already-enabled error
+            }
+        }
+        st.init = true;
+    }
+    GGML_ASSERT(st.slot_bytes >= need_bytes);
+    return st;
+}
+
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
@@ -2794,7 +3025,42 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     const int64_t n_expert_used = ids->ne[0];
     const int64_t ne_get_rows = ne12 * n_expert_used;
 
-    std::vector<int32_t> tokens_per_expert(ne02);
+    // [TAG_MOE_ASYNCEP] engage token-slice mode for this call: compute the full top-k FFN for
+    // this device's token slice against the prefetched all-expert copy. The effective view is
+    // "expert_base 0, n_ranks*ne02 experts, tokens [tok_lo, tok_hi)"; everything downstream
+    // (csort, gather, GEMM loop, scatter) runs off the _eff values unchanged in structure.
+    static const int64_t asyncep_min_tokens = []() {
+        const char * s = getenv("GGML_CUDA_MOE_ASYNCEP_MIN_TOKENS");
+        return s != nullptr ? atoll(s) : 3072;
+    }();
+    const int    dev_ae          = ggml_cuda_get_device();
+    int64_t      ne02_eff        = ne02;
+    int32_t      expert_base_eff = expert_base;
+    int64_t      tok_lo = 0, tok_hi = ne12;
+    const char * src0_data_eff   = (const char *) src0->data;
+    int          asyncep_entry_idx = -1;
+    if (moe_ep && ne12 >= asyncep_min_tokens && ggml_cuda_asyncep_enabled.load(std::memory_order_acquire)) {
+        const auto it = ggml_cuda_asyncep_lookup.find(src0->data);
+        if (it != ggml_cuda_asyncep_lookup.end()) {
+            asyncep_entry_idx = it->second;
+            const ggml_cuda_asyncep_entry & ae = ggml_cuda_asyncep_entries[asyncep_entry_idx];
+            ggml_cuda_asyncep_dev & st = ggml_cuda_asyncep_dev_init(dev_ae, ae.shard_bytes*ggml_cuda_asyncep_n_ranks);
+            ggml_cuda_asyncep_issue(dev_ae, asyncep_entry_idx); // no-op unless first touch or heal
+            const int slot = asyncep_entry_idx % GGML_CUDA_ASYNCEP_NSLOTS;
+            CUDA_CHECK(cudaStreamWaitEvent(stream, st.ev_ready[slot], 0));
+            const int     rank = ggml_cuda_asyncep_rank_of_dev[dev_ae];
+            const int64_t per  = ne12/ggml_cuda_asyncep_n_ranks;
+            const int64_t rem  = ne12 % ggml_cuda_asyncep_n_ranks;
+            tok_lo = rank*per + std::min<int64_t>(rank, rem);
+            tok_hi = tok_lo + per + (rank < rem ? 1 : 0);
+            ne02_eff        = ne02*ggml_cuda_asyncep_n_ranks;
+            expert_base_eff = 0;
+            src0_data_eff   = st.slots + (size_t) slot*st.slot_bytes;
+        }
+    }
+    const bool asyncep = asyncep_entry_idx >= 0;
+
+    std::vector<int32_t> tokens_per_expert(ne02_eff);
 
     // [TAG_MOE_BGEMM] Stage B1: single batched cuBLAS GEMM over all experts (env
     // GGML_CUDA_MOE_BGEMM), replacing the 256 per-expert cuBLAS calls. It reads maxM
@@ -2829,6 +3095,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         int64_t ne12 = -1, neu = -1, ne11 = -1, ne02 = -1;
         int32_t expert_base_c = 0;   // [TAG_MOE_EP] shard base this entry was sorted for
         int64_t n_local_c = -1;      // [TAG_MOE_EP] local pair count of the cached sort
+        bool    asyncep_c = false;   // [TAG_MOE_ASYNCEP] sort was made in token-slice mode
         int device = -1;
         int32_t * dev = nullptr;  // [ids_to_sorted(n_local) | ids_from_sorted(ne_get_rows)] int32
         size_t   cap = 0;         // capacity in int32 elements
@@ -2839,7 +3106,11 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     // device, a layer's up/gate/down on the same device share one sort (12 -> 4 sorts/layer on
     // 4 GPUs), and the same-layer-next-ubatch staleness argument from the single-entry design
     // still holds per slot (another layer's ids object always runs in between and evicts).
-    static thread_local moe_sort_cache mcache_arr[GGML_CUDA_MAX_DEVICES];
+    // [TAG_META_TBO] ALSO per stream slot: with TBO two evals are in flight on two streams,
+    // and this cache's device buffer (like the pinned staging below) is reuse-fenced only by
+    // drain syncs on ITS OWN stream -- sharing one entry across streams would let eval k+1
+    // overwrite memory that eval k's still-queued gathers read.
+    static thread_local moe_sort_cache mcache_arr[GGML_CUDA_MAX_DEVICES][2];
     // [TAG_MOE_P8] persistent PINNED host staging (env GGML_CUDA_MOE_PINNED). The pageable
     // std::vector D2H is not truly async: the API call itself blocks until the copy runs, and
     // the 4 submit threads additionally contend on the runtime's pageable-staging locks. With
@@ -2851,10 +3122,11 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         int32_t * sorted     = nullptr;  // H2D source: [ids_to_sorted(n_local) | ids_from_sorted(ne_get_rows)]
         size_t    sorted_cap = 0;        // in int32 elements
     };
-    static thread_local moe_pin_bufs pin_arr[GGML_CUDA_MAX_DEVICES];
+    static thread_local moe_pin_bufs pin_arr[GGML_CUDA_MAX_DEVICES][2]; // [TAG_META_TBO] per stream slot
 
     const int dev_cur = ggml_cuda_get_device();
-    moe_sort_cache & mcache = mcache_arr[dev_cur];
+    const int slot_cur = ctx.curr_stream_no < 2 ? ctx.curr_stream_no : 0; // [TAG_META_TBO]
+    moe_sort_cache & mcache = mcache_arr[dev_cur][slot_cur];
     const int32_t * ids_to_sorted;
     const int32_t * ids_from_sorted;
     int64_t n_local = ne_get_rows;  // [TAG_MOE_EP] # of (token,slot) pairs routed to LOCAL experts (== ne_get_rows off EP)
@@ -2869,7 +3141,8 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         && mcache.ids_ptr == (const void *) ids && mcache.device == dev_cur
         && mcache.ne12 == ne12 && mcache.neu == n_expert_used
         && mcache.ne11 == ne11 && mcache.ne02 == ne02
-        && mcache.expert_base_c == expert_base && mcache.n_local_c >= 0;
+        && mcache.expert_base_c == expert_base && mcache.n_local_c >= 0
+        && mcache.asyncep_c == asyncep;
 
     if (cache_hit) {
         n_local           = mcache.n_local_c;
@@ -2879,7 +3152,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     } else {
         static const bool moe_pinned = getenv("GGML_CUDA_MOE_PINNED") != nullptr;
         const bool use_pinned = moe_pinned && (moe_csort || moe_ep);
-        moe_pin_bufs & pin = pin_arr[dev_cur];
+        moe_pin_bufs & pin = pin_arr[dev_cur][slot_cur];
 
         std::vector<int32_t> ids_to_sorted_host;
         std::vector<int32_t> ids_from_sorted_host;
@@ -2907,6 +3180,34 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             ids_read = ids_host.data();
         }
 
+        // [TAG_MOE_HIST] optional routing-histogram dump (env GGML_CUDA_MOE_HIST=<path>),
+        // one text line per (layer, ubatch) with per-GLOBAL-expert counts. ids carry global
+        // indices on every device, so device 0's sort-computing call sees the full routing;
+        // cache hits skip this branch, so exactly one line per layer per ubatch is written.
+        static const char * moe_hist_path = getenv("GGML_CUDA_MOE_HIST");
+        if (moe_hist_path != nullptr && dev_cur == 0) {
+            static FILE * moe_hist_f = fopen(moe_hist_path, "w");
+            if (moe_hist_f != nullptr) {
+                int32_t hist[1024] = {0};
+                int32_t maxe = -1;
+                for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                    for (int64_t iex = 0; iex < n_expert_used; ++iex) {
+                        const int32_t e = *(const int32_t *)(ids_read + i12*ids->nb[1] + iex*ids->nb[0]);
+                        if (e >= 0 && e < 1024) {
+                            hist[e]++;
+                            maxe = e > maxe ? e : maxe;
+                        }
+                    }
+                }
+                fprintf(moe_hist_f, "%s %lld", src0->name, (long long) ne12);
+                for (int32_t e = 0; e <= maxe; ++e) {
+                    fprintf(moe_hist_f, " %d", hist[e]);
+                }
+                fprintf(moe_hist_f, "\n");
+                fflush(moe_hist_f);
+            }
+        }
+
         // where pass 2 writes; on the pinned path these point straight into the H2D staging
         int32_t * to_sorted_out   = nullptr;
         int32_t * from_sorted_out = nullptr;
@@ -2915,19 +3216,21 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             // [TAG_MOE_EP] pass 1: per-LOCAL-expert counts. ids carry GLOBAL indices; le = e - expert_base
             // is the local expert; under EP a pair with le outside [0,ne02) is non-local and skipped
             // (its output row is zero-filled via ZERO_ROW below). Off EP, expert_base==0 => le==e.
+            // [TAG_MOE_ASYNCEP] token-slice mode instead filters on the TOKEN (all experts local).
             for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                if (asyncep && (i12 < tok_lo || i12 >= tok_hi)) { continue; }
                 for (int64_t iex = 0; iex < n_expert_used; ++iex) {
                     const int32_t e = *(const int32_t *)(ids_read + i12*ids->nb[1] + iex*ids->nb[0]);
                     assert(e >= 0);
-                    const int32_t le = e - expert_base;
-                    if (moe_ep && (le < 0 || le >= ne02)) { continue; }
+                    const int32_t le = e - expert_base_eff;
+                    if (moe_ep && (le < 0 || le >= ne02_eff)) { continue; }
                     tokens_per_expert[le]++;
                 }
             }
             // exclusive prefix sum -> per-expert write cursor; n_local = total local pairs
-            std::vector<int32_t> cur(ne02);
+            std::vector<int32_t> cur(ne02_eff);
             n_local = 0;
-            for (int64_t i02 = 0; i02 < ne02; ++i02) {
+            for (int64_t i02 = 0; i02 < ne02_eff; ++i02) {
                 cur[i02] = (int32_t) n_local;
                 n_local += tokens_per_expert[i02];
             }
@@ -2951,10 +3254,16 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             const int32_t ZERO_ROW = (int32_t) n_local;  // dst_sorted row that is zeroed; non-local pairs point here
             // pass 2: stable placement in token-major, slot order (matches the triple loop)
             for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                if (asyncep && (i12 < tok_lo || i12 >= tok_hi)) {
+                    for (int64_t iex = 0; iex < n_expert_used; ++iex) {
+                        from_sorted_out[i12*n_expert_used + iex] = ZERO_ROW;
+                    }
+                    continue;
+                }
                 for (int64_t iex = 0; iex < n_expert_used; ++iex) {
                     const int32_t e = *(const int32_t *)(ids_read + i12*ids->nb[1] + iex*ids->nb[0]);
-                    const int32_t le = e - expert_base;
-                    if (moe_ep && (le < 0 || le >= ne02)) {
+                    const int32_t le = e - expert_base_eff;
+                    if (moe_ep && (le < 0 || le >= ne02_eff)) {
                         from_sorted_out[i12*n_expert_used + iex] = ZERO_ROW;
                         continue;
                     }
@@ -3024,15 +3333,23 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             mcache.ne12 = ne12; mcache.neu = n_expert_used; mcache.ne11 = ne11; mcache.ne02 = ne02;
             mcache.expert_base_c = expert_base;
             mcache.n_local_c     = n_local;
+            mcache.asyncep_c     = asyncep;
             mcache.tpe  = tokens_per_expert;
         }
     }
 
+    // [TAG_MOE_EP] n_local == 0 is legitimate (all routed experts non-local -- degenerate
+    // router ties on init/warmup evals with dummy inputs produce exactly this) and the
+    // zero-sized gather would be an invalid kernel launch. Skipping gather+GEMM is exact:
+    // every (token,slot) pair points at ZERO_ROW, which is zeroed below, so this shard
+    // contributes zeros to the PARTIAL combine.
+    if (n_local > 0) {
     get_rows_cuda(src1->data, src1->type, ids_to_sorted, src1_sorted.ptr, type_src1_sorted,
         ne10, nb11, nb12, nb13,
         n_local, 1, 1, sizeof(int32_t), n_local*sizeof(int32_t), n_local*sizeof(int32_t),
         ne10*ts_src1_sorted, n_local*ne10*ts_src1_sorted, n_local*ne10*ts_src1_sorted, stream);
     CUDA_CHECK(cudaGetLastError());
+    }
 
     // [TAG_MOE_DBG] GGML_CUDA_MOE_DEBUG_STATS=<n>: for the first n mul_mat_id calls, sync and
     // print absmax/mean/nan/inf of the gathered src1, the packed GEMM output, and the final
@@ -3058,7 +3375,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     };
     if (moe_dbg) { moe_dbg_stats("GATHER", src1_sorted.ptr, type_src1_sorted, n_local*ne10); }
 
-    if (moe_bgemm && ggml_is_quantized(src0->type) && type_src1_sorted == GGML_TYPE_F16) {
+    if (moe_bgemm && !asyncep && ggml_is_quantized(src0->type) && type_src1_sorted == GGML_TYPE_F16) {
         // ---- Stage B1: one batched cuBLAS GEMM over all experts (padded to maxM) ----
         // Semantics identical to the per-expert loop but reduction order changes -> not
         // byte-identical (KLD-gated). Dequant Q8_0 weights -> f16, f16-in/f32-out GEMM with
@@ -3157,14 +3474,14 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(), stream));
     }
 
-    for (int64_t i02 = 0; i02 < ne02; ++i02) {
+    for (int64_t i02 = 0; i02 < ne02_eff; ++i02) {
         if (tokens_per_expert[i02] == 0) {
             continue;
         }
 
         if (moe_f16_direct) {
             const int m = (int) tokens_per_expert[i02];
-            to_fp16_w((const char *) src0->data + i02*nb02, w_f16_pool.ptr, ne00*ne01, stream);
+            to_fp16_w(src0_data_eff + i02*nb02, w_f16_pool.ptr, ne00*ne01, stream);
             CUDA_CHECK(cudaGetLastError());
             const float alpha = 1.0f, beta = 0.0f;
             CUBLAS_CHECK(cublasGemmEx(ctx.cublas_handle(), CUBLAS_OP_T, CUBLAS_OP_N,
@@ -3183,7 +3500,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         src0_slice.nb[3]    = src0_slice.nb[2];
         src0_slice.op       = GGML_OP_VIEW;
         src0_slice.view_src = dst->src[0]; // non-const pointer to src0
-        src0_slice.data     = (char *) src0->data + i02*nb02;
+        src0_slice.data     = (char *) (src0_data_eff + i02*nb02);
 
         ggml_tensor src1_slice;
         memset(&src1_slice, 0, sizeof(src1_slice));
@@ -3219,6 +3536,18 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         src1_data_cur += src1_slice.nb[2];
         dst_data_cur  +=  dst_slice.nb[2];
     }
+    }
+
+    // [TAG_MOE_ASYNCEP] mark this slot consumed (fences its reuse by the copy stream) and top
+    // up the prefetch pipeline with the next NSLOTS-1 expert tensors in graph order; the wrap
+    // past the last entry pre-assembles the NEXT eval's first layers during this eval's tail.
+    if (asyncep) {
+        ggml_cuda_asyncep_dev & st = ggml_cuda_asyncep_devs[dev_ae];
+        CUDA_CHECK(cudaEventRecord(st.ev_done[asyncep_entry_idx % GGML_CUDA_ASYNCEP_NSLOTS], stream));
+        const int n_e = (int) ggml_cuda_asyncep_entries.size();
+        for (int k = 1; k < GGML_CUDA_ASYNCEP_NSLOTS; k++) {
+            ggml_cuda_asyncep_issue(dev_ae, (asyncep_entry_idx + k) % n_e);
+        }
     }
 
     // [TAG_MOE_EP] zero the shared ZERO_ROW (dst_sorted row n_local) that non-local (token,slot)
@@ -3693,10 +4022,123 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
     return true;
 }
 
+// [TAG_META_TBO] Stage D two-batch overlap: consecutive graph evals alternate between two
+// CUDA streams per device, so eval k+1's host phases (mmid ids drain + csort + per-expert
+// launches) overlap eval k's still-queued kernels, and eval k's allreduces overlap eval
+// k+1's compute. Scheduling-only: no computation changes (byte-identity is the gate).
+// Cross-eval ordering is fenced two ways:
+//  - persistent state (KV cache, GDN r/s): call-index-aligned events -- graph_compute call
+//    i of the new eval waits the event recorded after call i of the previous eval (graph
+//    structure is identical across same-size prefill evals; clamped to the previous eval's
+//    last event on mismatch, which degenerates to full serialization).
+//  - buffer-generation aliasing (the meta compute containers and the per-stream pools cycle
+//    with period 2): at eval start the host waits the reused slot's last event, bounding the
+//    pipeline at depth 2 by construction.
+// The meta backend calls begin_eval once per eval per backend BEFORE any dispatch, and only
+// engages on REBUILD evals (the meta compute container flip is tied to rebuild). Non-engaged
+// evals (decode) run on stream 0 after a full drain of both streams. CUDA graph capture and
+// the intra-graph concurrent-events machinery are disabled while an eval is TBO-active.
+#define GGML_CUDA_TBO_RING 512
+struct ggml_cuda_tbo_dev {
+    bool        active       = false;   // current eval runs under TBO
+    bool        prev_was_tbo = false;
+    int         slot         = 0;       // stream slot of the current eval (0/1)
+    int         call_idx     = 0;       // graph_compute calls so far in this eval
+    int         prev_count   = 0;       // graph_compute calls in the previous eval
+    int         last_idx[2]  = {-1, -1}; // last recorded event index per slot
+    bool        ev_init      = false;
+    cudaEvent_t ev[2][GGML_CUDA_TBO_RING];
+};
+static ggml_cuda_tbo_dev ggml_cuda_tbo_devs[GGML_CUDA_MAX_DEVICES];
+static std::atomic<bool> ggml_cuda_tbo_used{false}; // any eval ever engaged (widens synchronize)
+
+static void ggml_backend_cuda_tbo_begin_eval(ggml_backend_t backend, int engaged) {
+    if (backend == nullptr) {
+        return; // availability probe: a resolvable proc address means available
+    }
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    const int dev = cuda_ctx->device;
+    ggml_cuda_tbo_dev & td = ggml_cuda_tbo_devs[dev];
+    ggml_cuda_set_device(dev);
+    if (engaged) {
+        ggml_cuda_tbo_used.store(true, std::memory_order_relaxed);
+        if (!td.ev_init) {
+            for (int s = 0; s < 2; s++) {
+                for (int i = 0; i < GGML_CUDA_TBO_RING; i++) {
+                    CUDA_CHECK(cudaEventCreateWithFlags(&td.ev[s][i], cudaEventDisableTiming));
+                }
+            }
+            td.ev_init = true;
+        }
+        // debug: full drain between evals -- keeps streams/comms/rebuild identical but kills
+        // the overlap; discriminates cross-eval races from eval-local (slot 1) faults.
+        static const bool tbo_serial = getenv("GGML_META_TBO_SERIAL") != nullptr;
+        if (tbo_serial) {
+            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(dev, 0)));
+            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(dev, 1)));
+        }
+        if (!td.prev_was_tbo) {
+            // order the pipeline start behind everything already in flight (decode etc.)
+            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(dev, 0)));
+            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(dev, 1)));
+            td.slot = 0;
+            td.prev_count = 0;
+            td.last_idx[0] = td.last_idx[1] = -1;
+        } else {
+            td.prev_count = td.call_idx;
+            td.last_idx[td.slot] = std::min(td.call_idx, GGML_CUDA_TBO_RING) - 1; // -1 if no calls
+            td.slot ^= 1;
+        }
+        td.call_idx = 0;
+        td.active = true;
+        td.prev_was_tbo = true;
+        cuda_ctx->curr_stream_no = td.slot;
+    } else {
+        if (td.prev_was_tbo) {
+            // TBO -> non-TBO boundary: drain both streams so stream-0 work orders after them
+            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(dev, 0)));
+            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(dev, 1)));
+            td.prev_was_tbo = false;
+        }
+        td.active = false;
+        cuda_ctx->curr_stream_no = 0;
+    }
+}
+
+// [TAG_META_TBO] Called by the meta backend after an eval's dispatch completes. Depth-2
+// bound: block the host until the PREVIOUS eval (other slot) has fully executed, so the
+// caller's next alloc/set_inputs may safely reuse that eval's compute container and stream
+// pool (cuda set_tensor is host-blocking on cudaStreamPerThread, so once the host proceeds,
+// input H2D ordering is also covered). This wait is where the pipeline would idle anyway;
+// the win -- this eval's host phases overlapping the previous eval's kernels -- is upstream
+// of it.
+static void ggml_backend_cuda_tbo_end_eval(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return; // availability probe
+    }
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_tbo_dev & td = ggml_cuda_tbo_devs[cuda_ctx->device];
+    if (!td.active) {
+        return;
+    }
+    const int prev_slot = td.slot ^ 1;
+    if (td.last_idx[prev_slot] >= 0) {
+        ggml_cuda_set_device(cuda_ctx->device);
+        CUDA_CHECK(cudaEventSynchronize(td.ev[prev_slot][td.last_idx[prev_slot]]));
+    }
+}
+
 static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
 
     CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+
+    // [TAG_META_TBO] with stream alternation, synchronize must cover BOTH eval streams
+    // (the caller's contract is "all outstanding work on this backend is done").
+    if (ggml_cuda_tbo_used.load(std::memory_order_relaxed)) {
+        CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(cuda_ctx->device, 0)));
+        CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream(cuda_ctx->device, 1)));
+    }
 
     GGML_UNUSED(backend);
 }
@@ -4783,6 +5225,10 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     bool                         should_launch_concurrent_events = false;
 
     const auto try_launch_concurrent_event = [&](const ggml_tensor * node) {
+        // [TAG_META_TBO] fork/join assumes base stream 0; disabled while an eval is TBO-active
+        if (ggml_cuda_tbo_devs[cuda_ctx->device].active) {
+            return;
+        }
         if (stream_ctx.concurrent_events.find(node) != stream_ctx.concurrent_events.end()) {
             concurrent_event = &stream_ctx.concurrent_events[node];
 
@@ -5021,11 +5467,27 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     ggml_cuda_mmvq_q8_1_cache_next_gen();
 
+    // [TAG_META_TBO] fence this call against the same-index call of the previous eval on the
+    // other stream (covers KV-cache and GDN-state writes the current eval may read).
+    ggml_cuda_tbo_dev & tbo = ggml_cuda_tbo_devs[cuda_ctx->device];
+    if (tbo.active && tbo.prev_count > 0) {
+        const int widx = std::min(std::min(tbo.call_idx, tbo.prev_count - 1), GGML_CUDA_TBO_RING - 1);
+        CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(), tbo.ev[tbo.slot ^ 1][widx], 0));
+    }
+
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
     const void * graph_key = nullptr;
 
 #ifdef USE_CUDA_GRAPH
+    if (tbo.active) {
+        // [TAG_META_TBO] capture/replay is stream-bound and keyed on graph identity, which
+        // churns under rebuild-per-eval; keep TBO evals on the direct path.
+        ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, false, false, nullptr);
+        CUDA_CHECK(cudaEventRecord(tbo.ev[tbo.slot][std::min(tbo.call_idx, GGML_CUDA_TBO_RING - 1)], cuda_ctx->stream()));
+        tbo.call_idx++;
+        return GGML_STATUS_SUCCESS;
+    }
     graph_key = ggml_cuda_graph_get_key(cgraph);
 
     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
@@ -5071,6 +5533,12 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     }
 
     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+
+    // [TAG_META_TBO] reached with tbo.active only in builds without USE_CUDA_GRAPH
+    if (tbo.active) {
+        CUDA_CHECK(cudaEventRecord(tbo.ev[tbo.slot][std::min(tbo.call_idx, GGML_CUDA_TBO_RING - 1)], cuda_ctx->stream()));
+        tbo.call_idx++;
+    }
 
     return GGML_STATUS_SUCCESS;
 }
@@ -6177,6 +6645,24 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_comm_allreduce_tensor_single") == 0) {
         return (void *)ggml_backend_cuda_comm_allreduce_tensor_single;
+    }
+    if (strcmp(name, "ggml_backend_comm_allgather_tensor") == 0) {
+        return (void *)ggml_backend_cuda_comm_allgather_tensor;
+    }
+    if (strcmp(name, "ggml_backend_comm_allgather_tensor_single") == 0) {
+        return (void *)ggml_backend_cuda_comm_allgather_tensor_single;
+    }
+    if (strcmp(name, "ggml_backend_moe_asyncep_register") == 0) {
+        return (void *)ggml_cuda_moe_asyncep_register;
+    }
+    if (strcmp(name, "ggml_backend_moe_asyncep_set_enabled") == 0) {
+        return (void *)ggml_cuda_moe_asyncep_set_enabled;
+    }
+    if (strcmp(name, "ggml_backend_tbo_begin_eval") == 0) {
+        return (void *)ggml_backend_cuda_tbo_begin_eval;
+    }
+    if (strcmp(name, "ggml_backend_tbo_end_eval") == 0) {
+        return (void *)ggml_backend_cuda_tbo_end_eval;
     }
     if (strcmp(name, "ggml_backend_split_buffer_type") == 0) {
         return (void *)ggml_backend_cuda_split_buffer_type;

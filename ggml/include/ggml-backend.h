@@ -210,6 +210,23 @@ extern "C" {
     // thread). Collective order per comm must match across devices. tensor == NULL probes
     // availability (true iff the backend can service single-device calls, e.g. NCCL).
     typedef bool   (*ggml_backend_comm_allreduce_tensor_single_t)(void * comm_ctx, struct ggml_tensor * tensor, int backend_idx);
+    // [TAG_MOE_ASYNCEP] AllGather of contiguous equal per-rank slices (token-sliced MoE
+    // boundary). Same probe conventions as the allreduce variants (NULL tensor(s) probes).
+    typedef bool   (*ggml_backend_comm_allgather_tensor_t)(void * comm_ctx, struct ggml_tensor ** tensors);
+    typedef bool   (*ggml_backend_comm_allgather_tensor_single_t)(void * comm_ctx, struct ggml_tensor * tensor, int backend_idx);
+    // [TAG_MOE_ASYNCEP] Register one expert weight tensor's per-rank shards (device pointers
+    // in comm-rank order + byte offsets of each rank's experts in the assembled copy) for the
+    // background weight-gather prefetch; insertion order defines the prefetch sequence.
+    // set_enabled toggles the token-slice compute mode per graph eval (before dispatch).
+    typedef void   (*ggml_backend_moe_asyncep_register_t)(const void ** shard_data, const size_t * shard_offs, int n_ranks, size_t shard_bytes);
+    typedef void   (*ggml_backend_moe_asyncep_set_enabled_t)(int enabled);
+    // [TAG_META_TBO] Stage D two-batch overlap: called once per graph eval per backend before
+    // any dispatch for that eval; engaged evals alternate the backend's compute stream and
+    // fence cross-eval hazards, non-engaged evals drain back to stream 0.
+    typedef void   (*ggml_backend_tbo_begin_eval_t)(ggml_backend_t backend, int engaged);
+    // Blocks until the PREVIOUS eval has fully executed (depth-2 pipeline bound) -- must be
+    // called at the end of every engaged eval's dispatch, before the caller reuses buffers.
+    typedef void   (*ggml_backend_tbo_end_eval_t)(ggml_backend_t backend);
 
     // Split buffer type for tensor parallelism (old)
     typedef ggml_backend_buffer_type_t   (*ggml_backend_split_buffer_type_t)(int main_device, const float * tensor_split);

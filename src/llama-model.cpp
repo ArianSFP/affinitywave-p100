@@ -359,6 +359,7 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     const std::regex pattern_ssm_conv1d      ("blk\\.\\d*\\.ssm_conv1d.weight");
     const std::regex pattern_ssm_out_weight  ("blk\\.\\d*\\.ssm_out.weight");
 
+    const std::regex pattern_ffn_exps_weight   ("blk\\.\\d*\\.ffn_(up|gate|down)_exps\\.weight"); // [TAG_MOE_EP]
     const std::regex pattern_ffn_up_gate_weight("blk\\.\\d*\\.ffn_(up|gate)(_exps)?.weight");
     const std::regex pattern_ffn_up_gate_bias  ("blk\\.\\d*\\.ffn_(up|gate)(_exps)?.bias");
     const std::regex pattern_ffn_gate_up_weight("blk\\.\\d*\\.ffn_gate_up(_exps)?.weight");
@@ -468,6 +469,14 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         }
 
         // FFN
+        // [TAG_MOE_EP] Stage C: expert-parallel. Slice the 3D MoE expert tensors on the
+        // EXPERT axis (2) instead of the dense-TP row-split (which asserts on 3D experts),
+        // giving each GPU a contiguous shard of n_expert/n_devices experts. Gated by
+        // GGML_CUDA_MOE_EP so -sm layer / plain -sm tensor behavior is unchanged.
+        static const bool moe_ep = getenv("GGML_CUDA_MOE_EP") != nullptr;
+        if (moe_ep && std::regex_match(tensor_name, pattern_ffn_exps_weight)) {
+            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_2);
+        }
         if (std::regex_match(tensor_name, pattern_ffn_up_gate_weight)) {
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "ffn_down.weight", "ffn_down_exps.weight");
         }
@@ -631,6 +640,15 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         }
 
         // FFN
+        // [TAG_MOE_EP] under EP the expert tensors are split on the expert axis (2), where any
+        // boundary is valid (blck_size only constrains rows WITHIN an expert). The dense row
+        // granularity of 128 below would quantize the 256-expert split to [0,128,0,128] and
+        // put each layer's experts on only 2 of 4 GPUs (measured via moe-dbg n_local).
+        static const bool moe_ep = getenv("GGML_CUDA_MOE_EP") != nullptr;
+        if (moe_ep && std::regex_match(tensor_name, pattern_ffn_exps_weight)) {
+            GGML_ASSERT(segments.size() == 1);
+            return {1};
+        }
         if (std::regex_match(tensor_name, pattern_ffn_up_gate_weight) || std::regex_match(tensor_name, pattern_ffn_up_gate_bias) ||
                 std::regex_match(tensor_name, pattern_ffn_gate_up_weight) || std::regex_match(tensor_name, pattern_ffn_down_weight)) {
             const int64_t blck_size_perf = std::lcm(blck_size, 128);

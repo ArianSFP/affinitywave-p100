@@ -1723,6 +1723,10 @@ struct ggml_backend_meta_context {
     void *                                      comm_ctx              = nullptr;
     ggml_backend_comm_allreduce_tensor_t        comm_allreduce        = nullptr;
     ggml_backend_comm_allreduce_tensor_single_t comm_allreduce_single = nullptr; // [TAG_META_SUBMIT] optional, SPMD mode
+    ggml_backend_moe_asyncep_register_t         asyncep_register      = nullptr; // [TAG_MOE_ASYNCEP] optional
+    ggml_backend_moe_asyncep_set_enabled_t      asyncep_set_enabled   = nullptr; // [TAG_MOE_ASYNCEP] optional
+    ggml_backend_tbo_begin_eval_t               tbo_begin_eval        = nullptr; // [TAG_META_TBO] optional
+    ggml_backend_tbo_end_eval_t                 tbo_end_eval          = nullptr; // [TAG_META_TBO] optional
 
     ggml_backend_meta_context(ggml_backend_dev_t meta_dev, const char * params) {
         const size_t n_devs = ggml_backend_meta_dev_n_devs(meta_dev);
@@ -1757,6 +1761,18 @@ struct ggml_backend_meta_context {
             comm_allreduce_single = (ggml_backend_comm_allreduce_tensor_single_t)
                 ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                     ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_allreduce_tensor_single");
+            asyncep_register = (ggml_backend_moe_asyncep_register_t)
+                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_moe_asyncep_register");
+            asyncep_set_enabled = (ggml_backend_moe_asyncep_set_enabled_t)
+                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_moe_asyncep_set_enabled");
+            tbo_begin_eval = (ggml_backend_tbo_begin_eval_t)
+                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_tbo_begin_eval");
+            tbo_end_eval = (ggml_backend_tbo_end_eval_t)
+                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_tbo_end_eval");
         }
     }
 
@@ -2433,6 +2449,95 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     };
 
 
+    // [TAG_MOE_ASYNCEP] token-slice EP with background weight gather. Register the expert
+    // shards once (graph node order = the prefetch order) and raise the CUDA-side enable
+    // flag for graphs carrying a prefill-sized EP MUL_MAT_ID; the CUDA fallback engages per
+    // call (its own >= min-tokens check), everything else keeps the expert-filtered path.
+    // The combine stays the PARTIAL allreduce below - token-sliced outputs are
+    // disjoint-support partials (foreign-token rows are zero), so summing them is exact and
+    // mixed expert-mode/token-slice evals need no boundary coordination.
+    static const bool asyncep_env = getenv("GGML_CUDA_MOE_ASYNCEP") != nullptr;
+    if (asyncep_env && n_backends > 1 && backend_ctx->asyncep_register != nullptr &&
+            backend_ctx->asyncep_set_enabled != nullptr) {
+        static const int64_t asyncep_min_tokens = []() {
+            const char * s = getenv("GGML_CUDA_MOE_ASYNCEP_MIN_TOKENS");
+            return s != nullptr ? atoll(s) : 3072;
+        }();
+        bool engage = false;
+        for (int i = 0; i < cgraph->n_nodes; i++) {
+            const ggml_tensor * node = cgraph->nodes[i];
+            if (node->op == GGML_OP_MUL_MAT_ID && node->ne[2] >= asyncep_min_tokens && node->src[0] != nullptr &&
+                    ggml_backend_meta_get_split_state(node->src[0], false).axis == GGML_BACKEND_SPLIT_AXIS_2) {
+                engage = true;
+                break;
+            }
+        }
+        if (engage) {
+            for (int i = 0; i < cgraph->n_nodes; i++) {
+                ggml_tensor * node = cgraph->nodes[i];
+                if (node->op != GGML_OP_MUL_MAT_ID || node->src[0] == nullptr ||
+                        ggml_backend_meta_get_split_state(node->src[0], false).axis != GGML_BACKEND_SPLIT_AXIS_2) {
+                    continue;
+                }
+                std::vector<const void *> shard_data(n_backends);
+                std::vector<size_t>       shard_offs(n_backends);
+                size_t shard_bytes = 0;
+                bool ok = true;
+                for (size_t j = 0; j < n_backends && ok; j++) {
+                    const ggml_tensor * w = ggml_backend_meta_buffer_simple_tensor(node->src[0], j);
+                    const ggml_tensor * d = backend_ctx->backend_configs[j].nodes[i];
+                    const int32_t stamp = d != nullptr ? d->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t) - 1] : 0;
+                    ok = w != nullptr && w->data != nullptr && stamp != 0;
+                    if (!ok) {
+                        break;
+                    }
+                    shard_data[j] = w->data;
+                    shard_offs[j] = (size_t) (stamp - 1) * node->src[0]->nb[2];
+                    if (j == 0) {
+                        shard_bytes = ggml_nbytes(w);
+                    }
+                    ok = ggml_nbytes(w) == shard_bytes; // equal shards required (n_expert % n_ranks == 0)
+                }
+                if (ok) {
+                    backend_ctx->asyncep_register(shard_data.data(), shard_offs.data(), (int) n_backends, shard_bytes);
+                }
+            }
+        }
+        backend_ctx->asyncep_set_enabled(engage ? 1 : 0);
+    }
+
+    // [TAG_META_TBO] Stage D two-batch overlap: alternate consecutive evals between two CUDA
+    // streams per device so eval k+1's host phases overlap eval k's queued kernels and eval
+    // k's allreduces overlap eval k+1's compute. Engage ONLY on rebuild evals: the meta
+    // compute container flip (stc_compute[2], toggled per rebuild) is what double-buffers the
+    // activations between in-flight evals -- a REUSED graph writes the same container and
+    // must not overlap (run with LLAMA_GRAPH_REUSE_DISABLE=1 to make every prefill eval a
+    // rebuild). The begin_eval hook must run every eval so TBO->decode transitions drain.
+    static const bool tbo_env = getenv("GGML_META_TBO") != nullptr;
+    if (tbo_env && n_backends > 1 && backend_ctx->tbo_begin_eval != nullptr &&
+            backend_ctx->comm_ctx != nullptr && backend_ctx->comm_allreduce_single != nullptr &&
+            backend_ctx->comm_allreduce_single(backend_ctx->comm_ctx, nullptr, 0)) {
+        // NCCL-only (probe above): the per-slot comm sets serialize collectives per stream;
+        // the butterfly/internal allreduce paths are not slot-aware.
+        static const int64_t tbo_min_tokens = []() {
+            const char * s = getenv("GGML_META_TBO_MIN_TOKENS");
+            return s != nullptr ? atoll(s) : 64;
+        }();
+        bool tbo_engage = false;
+        if (needs_rebuild) {
+            for (int i = 0; i < cgraph->n_nodes; i++) {
+                const ggml_tensor * node = cgraph->nodes[i];
+                if (node->op == GGML_OP_MUL_MAT_ID && node->ne[2] >= tbo_min_tokens) {
+                    tbo_engage = true;
+                    break;
+                }
+            }
+        }
+        for (size_t j = 0; j < n_backends; j++) {
+            backend_ctx->tbo_begin_eval(backend_ctx->backend_configs[j].backend, tbo_engage ? 1 : 0);
+        }
+    }
+
     // [TAG_META_SUBMIT] mode 2 (SPMD): each device's worker runs the ENTIRE subgraph loop,
     // including its own convert->allreduce->convert on its own comm. This removes the
     // per-subgraph join and the main-thread serial allreduce issue that left the GPUs idle
@@ -2500,6 +2605,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
         if (dbg_sync_spmd) {
             for (size_t j = 0; j < n_backends; j++) {
                 ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+            }
+        }
+        // [TAG_META_TBO] depth-2 bound: wait for the PREVIOUS eval before the caller reuses
+        // its compute container / stream pool (no-op when TBO is not active).
+        if (backend_ctx->tbo_end_eval != nullptr) {
+            for (size_t j = 0; j < n_backends; j++) {
+                backend_ctx->tbo_end_eval(backend_ctx->backend_configs[j].backend);
             }
         }
         return GGML_STATUS_SUCCESS;
@@ -2581,6 +2693,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     if (dbg_sync) {
         for (size_t j = 0; j < n_backends; j++) {
             ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+        }
+    }
+    // [TAG_META_TBO] depth-2 bound: wait for the PREVIOUS eval before the caller reuses its
+    // compute container / stream pool (no-op when TBO is not active).
+    if (backend_ctx->tbo_end_eval != nullptr) {
+        for (size_t j = 0; j < n_backends; j++) {
+            backend_ctx->tbo_end_eval(backend_ctx->backend_configs[j].backend);
         }
     }
     return GGML_STATUS_SUCCESS;
