@@ -38,6 +38,15 @@ bool ggml_cuda_moe_mul_mat_id_plan(
     const char    * src0_data,          // this device's expert weights (Q8_0)
     cudaStream_t    stream);
 
+// [TAG_MOE_PLAN] fused down-projection + routing-weight MUL (called from
+// ggml_cuda_try_fuse on a {MUL_MAT_ID, MUL} pair). Byte-identical to the
+// unfused pair; returns false when ineligible.
+bool ggml_cuda_moe_mul_mat_id_plan_fused_mul(
+    ggml_backend_cuda_context & ctx,
+    ggml_tensor   * mmid,
+    ggml_tensor   * mul_node,
+    cudaStream_t    stream);
+
 // [TAG_MOE_PLAN_GRAPHS] A7: true when the plan path WILL handle this
 // MUL_MAT_ID node sync-free AND graph capture is opted in (env
 // GGML_CUDA_MOE_PLAN_GRAPHS). Must mirror the runtime engagement exactly:

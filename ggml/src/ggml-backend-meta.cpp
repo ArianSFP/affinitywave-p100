@@ -22,6 +22,7 @@
 #include <thread>
 #include <tuple>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 struct ggml_backend_meta_device;
@@ -1289,9 +1290,89 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor(ggml_backend_buffer
     return ggml_backend_meta_buffer_init_tensor_impl(buf_ctx->get_simple_tensor_container(tensor), tensor);
 }
 
+// [TAG_MOE_EPLB] load-time expert-order permutation (env GGML_CUDA_MOE_EPLB_MAP=<file>,
+// lines: "<layer> <n_expert ints>"). Expert slot i receives source expert perm[i]:
+// ffn_*_exps permute along the expert axis (dim 2), the router ffn_gate_inp permutes
+// its output rows (dim 1) identically. Routing ids then live in the permuted space and
+// ALL runtime code is unchanged; the EP4 contiguous slices become the calibrated
+// balanced bins. Function-preserving: same experts, same logit values, renamed slots.
+static const std::vector<int32_t> * ggml_backend_meta_eplb_perm(const char * name, int64_t n_expert, int * axis_out) {
+    static std::unordered_map<int, std::vector<int32_t>> maps = []() {
+        std::unordered_map<int, std::vector<int32_t>> m;
+        const char * path = getenv("GGML_CUDA_MOE_EPLB_MAP");
+        if (path == nullptr) {
+            return m;
+        }
+        FILE * f = fopen(path, "r");
+        if (f == nullptr) {
+            GGML_LOG_WARN("%s: GGML_CUDA_MOE_EPLB_MAP=%s not readable - IGNORED\n", __func__, path);
+            return m;
+        }
+        int layer;
+        while (fscanf(f, "%d", &layer) == 1) {
+            std::vector<int32_t> & p = m[layer];
+            int v;
+            while (p.size() < 4096 && fscanf(f, "%d", &v) == 1) {
+                p.push_back(v);
+                const int c = fgetc(f);
+                if (c == '\n' || c == EOF) {
+                    break;
+                }
+                ungetc(c, f);
+            }
+        }
+        fclose(f);
+        GGML_LOG_WARN("ggml-meta: EPLB expert permutation map loaded for %zu layers\n", m.size());
+        return m;
+    }();
+    if (maps.empty()) {
+        return nullptr;
+    }
+    int layer = -1;
+    if (sscanf(name, "blk.%d.", &layer) != 1) {
+        return nullptr;
+    }
+    const bool is_exps = strstr(name, "ffn_gate_exps") || strstr(name, "ffn_up_exps") || strstr(name, "ffn_down_exps");
+    const bool is_inp  = strstr(name, "ffn_gate_inp") != nullptr && strstr(name, "shexp") == nullptr;
+    if (!is_exps && !is_inp) {
+        return nullptr;
+    }
+    const auto it = maps.find(layer);
+    if (it == maps.end() || (int64_t) it->second.size() != n_expert) {
+        return nullptr;
+    }
+    *axis_out = is_exps ? 2 : 1;
+    return &it->second;
+}
+
 static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(buffer);
     GGML_ASSERT(ggml_is_contiguous(tensor));
+
+    // [TAG_MOE_EPLB] permute into a host scratch BEFORE the split dispatch, so the
+    // existing slicing logic (any split mode) sees a plain reordered tensor.
+    std::vector<char> eplb_tmp;
+    {
+        int axis = -1;
+        const std::vector<int32_t> * perm = nullptr;
+        if (tensor->ne[2] > 1) {
+            perm = ggml_backend_meta_eplb_perm(tensor->name, tensor->ne[2], &axis);
+        }
+        if (perm == nullptr && tensor->ne[2] == 1) {
+            perm = ggml_backend_meta_eplb_perm(tensor->name, tensor->ne[1], &axis);
+        }
+        if (perm != nullptr) {
+            GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor));
+            const size_t chunk = tensor->nb[axis];
+            const int64_t n    = tensor->ne[axis];
+            GGML_ASSERT(chunk * n == size);
+            eplb_tmp.resize(size);
+            for (int64_t i = 0; i < n; ++i) {
+                memcpy(eplb_tmp.data() + (size_t) i*chunk, (const char *) data + (size_t) (*perm)[i]*chunk, chunk);
+            }
+            data = eplb_tmp.data();
+        }
+    }
 
     const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ false);
 

@@ -292,6 +292,7 @@ static void moe_gemm_q8_plan(const float * __restrict__ A, size_t a_stride,
                              const int32_t * __restrict__ to_sorted,
                              const int32_t * __restrict__ tiles, int tile_cap,
                              const int32_t * __restrict__ scalars,
+                             const float * __restrict__ rw,
                              size_t nb01, size_t nb02, int n, int k) {
     __shared__ moe_gemm_smem sm;
 
@@ -413,9 +414,13 @@ static void moe_gemm_q8_plan(const float * __restrict__ A, size_t a_stride,
             if (kgrp == 0) {
                 const int r = mt * 8 + rnd;
                 if (r < rows) {
+                    // [TAG_MOE_PLAN] fused routing-weight multiply: same fp32 op the
+                    // downstream MUL node applies, moved before the inverse scatter
+                    const float w = rw != nullptr ? rw[to_sorted[row0 + r]] : 1.0f;
                     #pragma unroll
                     for (int j = 0; j < 8; ++j) {
                         float v = acc[rnd][j] + sm.red[j][0 * 32 + lane] + sm.red[j][1 * 32 + lane] + sm.red[j][2 * 32 + lane];
+                        if (rw != nullptr) { v = v * w; }
                         C[(size_t) (row0 + r) * n + col0 + nt * 8 + j] = v;
                     }
                 }
@@ -480,9 +485,10 @@ bool ggml_cuda_moe_plan_node_supported(const ggml_tensor * node) {
     return plan_graphs && moe_plan_dst_eligible(node);
 }
 
-bool ggml_cuda_moe_mul_mat_id_plan(
+static bool moe_plan_exec(
         ggml_backend_cuda_context & ctx, ggml_tensor * dst, int32_t expert_base,
-        bool moe_ep, const char * src0_data, cudaStream_t stream) {
+        const char * src0_data, cudaStream_t stream,
+        const float * rw, ggml_tensor * out) {
     if (!moe_plan_dst_eligible(dst)) {
         return false;
     }
@@ -597,17 +603,52 @@ bool ggml_cuda_moe_mul_mat_id_plan(
     // persistent fixed-grid grouped GEMM, in-kernel f32 gather (A3)
     const int nsm = ggml_cuda_info().devices[dev].nsm;
     moe_gemm_q8_plan<<<nsm * 2, 128, 0, stream>>>((const float *) src1->data, a_stride,
-        src0_data, dst_sorted.ptr, ws.to_sorted(), ws.tiles(), tile_cap, ws.scalars(),
+        src0_data, dst_sorted.ptr, ws.to_sorted(), ws.tiles(), tile_cap, ws.scalars(), rw,
         src0->nb[1], src0->nb[2], (int) ne0, (int) ne00);
     CUDA_CHECK(cudaGetLastError());
 
     // capacity-sized inverse scatter (unchanged machinery; launch is shape-static)
-    get_rows_cuda(dst_sorted.ptr, GGML_TYPE_F32, ws.from_sorted(), dst->data, dst->type,
+    get_rows_cuda(dst_sorted.ptr, GGML_TYPE_F32, ws.from_sorted(), out->data, out->type,
         ne0, ne0*sizeof(float), n_assign*ne0*sizeof(float), n_assign*ne0*sizeof(float),
         n_assign, 1, 1, sizeof(int32_t), n_assign*sizeof(int32_t), n_assign*sizeof(int32_t),
-        dst->nb[1], dst->nb[2], dst->nb[3], stream);
+        out->nb[1], out->nb[2], out->nb[3], stream);
     CUDA_CHECK(cudaGetLastError());
 
-    GGML_UNUSED(moe_ep);
     return true;
+}
+
+bool ggml_cuda_moe_mul_mat_id_plan(
+        ggml_backend_cuda_context & ctx, ggml_tensor * dst, int32_t expert_base,
+        bool moe_ep, const char * src0_data, cudaStream_t stream) {
+    GGML_UNUSED(moe_ep);
+    return moe_plan_exec(ctx, dst, expert_base, src0_data, stream, nullptr, dst);
+}
+
+// [TAG_MOE_PLAN] fused down-projection + routing-weight MUL. Requirements on
+// top of plan eligibility: ne11 == n_expert_used (then to_sorted holds the
+// assignment index = the flat index into the contiguous [1, neu, ne12]
+// weights), weights layout contiguous, no asyncep (it would divert to the
+// host path at runtime). Byte-identical to the unfused pair: the identical
+// fp32 multiply runs before the inverse scatter instead of after it.
+bool ggml_cuda_moe_mul_mat_id_plan_fused_mul(
+        ggml_backend_cuda_context & ctx, ggml_tensor * mmid, ggml_tensor * mul_node,
+        cudaStream_t stream) {
+    static const bool nofold = getenv("GGML_CUDA_MOE_PLAN_NOFOLD") != nullptr;
+    if (nofold || getenv("GGML_CUDA_MOE_ASYNCEP") != nullptr || !moe_plan_dst_eligible(mmid)) {
+        return false;
+    }
+    const ggml_tensor * src1 = mmid->src[1];
+    const ggml_tensor * ids  = mmid->src[2];
+    const ggml_tensor * w    = mul_node->src[1];
+    const int64_t neu = ids->ne[0];
+    if (src1->ne[1] != neu ||                       // to_sorted must be the assignment index
+        w->type != GGML_TYPE_F32 || w->ne[0] != 1 || w->ne[1] != neu || w->ne[2] != src1->ne[2] ||
+        w->nb[1] != sizeof(float) || w->nb[2] != (size_t) neu*sizeof(float) ||
+        mul_node->type != GGML_TYPE_F32 || !ggml_are_same_shape(mmid, mul_node)) {
+        return false;
+    }
+    const int32_t ep_param = mmid->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t) - 1];
+    const int32_t expert_base = ep_param != 0 ? ep_param - 1 : 0;
+    return moe_plan_exec(ctx, mmid, expert_base, (const char *) mmid->src[0]->data, stream,
+                         (const float *) w->data, mul_node);
 }

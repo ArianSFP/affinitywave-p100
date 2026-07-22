@@ -4837,6 +4837,24 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // [TAG_MOE_PLAN] fold the routing-weight MUL into the down-projection's
+    // grouped-plan epilogue (byte-identical: the same fp32 multiply, applied
+    // before the inverse scatter instead of after it). Engage only where the
+    // mul_mat_id would take the large-batch fallback (decode MMVQ untouched)
+    // and only under EP (MMQ/MMF cannot preempt the fallback there).
+    if (node->op == GGML_OP_MUL_MAT_ID && i + 1 < cgraph->n_nodes &&
+        cgraph->nodes[i + 1]->op == GGML_OP_MUL && cgraph->nodes[i + 1]->src[0] == node &&
+        ggml_can_fuse(cgraph, i, { GGML_OP_MUL_MAT_ID, GGML_OP_MUL })) {
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        const int mmvq_mmid_max = ggml_is_quantized(node->src[0]->type) ?
+            get_mmvq_mmid_max_batch(node->src[0]->type, cc) : 0;
+        const int32_t ep_param = node->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t) - 1];
+        if (node->ne[2] > mmvq_mmid_max && ep_param != 0 &&
+            ggml_cuda_moe_mul_mat_id_plan_fused_mul(*cuda_ctx, node, cgraph->nodes[i + 1], cuda_ctx->stream())) {
+            return 1;
+        }
+    }
+
     // gated_delta_net -> cpy: scatter recurrent-state snapshots into the cache
     if (node->op == GGML_OP_GATED_DELTA_NET) {
         ggml_cuda_gated_delta_net_fused_cache fused_state_cpy;
