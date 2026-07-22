@@ -29,6 +29,7 @@
 #include "ggml-cuda/getrows.cuh"
 #include "ggml-cuda/im2col.cuh"
 #include "ggml-cuda/mmf.cuh"
+#include "ggml-cuda/moe-gemm.cuh"
 #include "ggml-cuda/mmq.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
@@ -3465,6 +3466,21 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     // same f16 x f16 -> f32 GemmEx with COMPUTE_32F, on the same handle/stream. Same kernels,
     // same accumulation -> byte-identical to the f32-gather path.
     const bool moe_f16_direct = type_src1_sorted == GGML_TYPE_F16 && ggml_is_quantized(src0->type);
+
+    // [TAG_MOE_GROUPED] one-launch grouped GEMM over all local experts (env
+    // GGML_CUDA_MOE_GROUPED): replaces the per-expert dequant+GemmEx loop below with a
+    // single custom kernel that reads native Q8_0 directly. Skips the per-call weight
+    // dequant pass entirely and removes per-expert launch/underfill costs (measured
+    // 1.4-1.9x on this slice at real routing distributions, bench/a1-gemm). NOT
+    // byte-identical to the loop: fixed-tile split-K reduction order + exact fp32
+    // dequant (the loop rounds d*q to f16 first; fp64-sampled ~300x closer to truth).
+    static const bool moe_grouped = getenv("GGML_CUDA_MOE_GROUPED") != nullptr;
+    if (moe_grouped && moe_f16_direct && n_local > 0 &&
+        ggml_cuda_moe_gemm_q8_grouped_supported(ne00, ne0, src0->type)) {
+        ggml_cuda_moe_gemm_q8_grouped(ctx, (const char *) src0_data_eff, nb01, nb02,
+            (const half *) src1_sorted.ptr, (float *) dst_sorted.ptr,
+            tokens_per_expert.data(), ne02_eff, ne0, ne00, stream);
+    } else {
     ggml_cuda_pool_alloc<half> w_f16_pool(ctx.pool());
     to_fp16_cuda_t to_fp16_w = nullptr;
     if (moe_f16_direct) {
@@ -3536,6 +3552,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         src1_data_cur += src1_slice.nb[2];
         dst_data_cur  +=  dst_slice.nb[2];
     }
+    } // [TAG_MOE_GROUPED] end of per-expert-loop else branch
     }
 
     // [TAG_MOE_ASYNCEP] mark this slot consumed (fences its reuse by the copy stream) and top
