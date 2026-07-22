@@ -23,3 +23,17 @@ void ggml_cuda_moe_gemm_q8_grouped(
     int64_t         ne0,                // output features (N)
     int64_t         ne00,               // contraction (K)
     cudaStream_t    stream);
+
+// [TAG_MOE_PLAN] A6 sync-free path (env GGML_CUDA_MOE_PLAN): device-built
+// routing plan (histogram/scan/tile-table + scatter, 2 kernels), persistent
+// fixed-grid grouped Q8_0 GEMM with in-kernel f32 gather (A3), and the
+// existing capacity-sized inverse scatter with ZERO_ROW at the capacity
+// slot. NO ids D2H, NO stream sync, NO host-data-dependent launches.
+// Returns false when ineligible (caller falls through to the host path).
+bool ggml_cuda_moe_mul_mat_id_plan(
+    ggml_backend_cuda_context & ctx,
+    ggml_tensor   * dst,
+    int32_t         expert_base,        // first LOCAL expert (EP), 0 off EP
+    bool            moe_ep,             // EP mode (non-local ids -> zero row)
+    const char    * src0_data,          // this device's expert weights (Q8_0)
+    cudaStream_t    stream);

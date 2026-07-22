@@ -3061,6 +3061,14 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     }
     const bool asyncep = asyncep_entry_idx >= 0;
 
+    // [TAG_MOE_PLAN] A6 sync-free path (env GGML_CUDA_MOE_PLAN): device-built plan +
+    // persistent grouped GEMM + fused f32 gather. No ids D2H, no stream sync, every
+    // launch shape-static (A7 graph-capture eligible). Falls through to the host path
+    // when ineligible (non-Q8_0, debug envs, asyncep, odd dims).
+    if (!asyncep && ggml_cuda_moe_mul_mat_id_plan(ctx, dst, expert_base_eff, moe_ep, src0_data_eff, stream)) {
+        return;
+    }
+
     std::vector<int32_t> tokens_per_expert(ne02_eff);
 
     // [TAG_MOE_BGEMM] Stage B1: single batched cuBLAS GEMM over all experts (env
