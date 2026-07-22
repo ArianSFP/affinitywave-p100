@@ -6,15 +6,20 @@
 #include "ggml-cpp.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
+#include <functional>
 #include <cstdint>
 #include <cstring>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -544,6 +549,15 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
 
     // Some ops broadcast the src1 data across src0:
     auto handle_bin_bcast = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
+        // [TAG_MOE_EP] multiplicative broadcast preserves disjoint-support PARTIAL: scaling a
+        // per-shard expert activation (PARTIAL) by mirrored routing weights, or gate*up. ADD/SUB
+        // must NOT do this (they need the PARTIAL all-reduced first, handled elsewhere).
+        if (tensor->op == GGML_OP_MUL &&
+                ((src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL &&
+                    (src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED || src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL)) ||
+                 (src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL && src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED))) {
+            return {assume_sync ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
+        }
         if (src_ss[0].axis >= 0 && src_ss[0].axis < GGML_MAX_DIMS &&
                 tensor->src[1]->ne[src_ss[0].axis] == 1 && src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
             return src_ss[0];
@@ -573,6 +587,20 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
     };
 
     auto handle_mul_mat = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
+        // [TAG_MOE_EP] Stage C: expert-parallel MUL_MAT_ID. Expert weights (src0) are sharded
+        // on the expert axis (2); tokens (src1) and ids (src2) are mirrored. Each device
+        // computes only its local experts' contributions and zero-fills the (token,slot) rows
+        // whose selected expert is non-local, so the element-wise SUM across devices equals the
+        // true MoE output -> PARTIAL. The existing PARTIAL->MIRRORED all-reduce reconstructs it.
+        // src1 is MIRRORED for gate/up (the FFN input) or PARTIAL for down (the GLU of gate*up,
+        // which has disjoint per-device support = PARTIAL). Both yield a PARTIAL expert output.
+        if (tensor->op == GGML_OP_MUL_MAT_ID && src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_2 &&
+                (src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED ||
+                 src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL)) {
+            // assume_sync => the per-shard outputs have been all-reduced to the full (MIRRORED)
+            // result; otherwise PARTIAL, which marks the all-reduce boundary (mirrors line ~603).
+            return {assume_sync ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_PARTIAL, {0}, {1}, 1};
+        }
         if (src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED && src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
             return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
         }
@@ -1165,6 +1193,24 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
         }
         t_ij->flags = tensor->flags;
         memcpy(t_ij->op_params, tensor->op_params, sizeof(tensor->op_params));
+        // [TAG_MOE_EP] Stage C: stamp this device's expert-base offset into a reserved
+        // op_params slot (index 15) for expert-parallel MUL_MAT_ID, so the CUDA kernel can map
+        // global expert ids -> its local shard [base, base+ne02) and zero-fill non-local rows.
+        // Encoding: 0 = no EP (default everywhere else); (base+1) = EP with that base, so device
+        // 0's base 0 is still distinguishable from "not stamped".
+        if (tensor->op == GGML_OP_MUL_MAT_ID && tensor->src[0] != nullptr &&
+                ggml_backend_buffer_is_meta(tensor->src[0]->buffer)) {
+            const ggml_backend_meta_split_state ss0 = ggml_backend_meta_get_split_state(tensor->src[0], /*assume_sync =*/ true);
+            if (ss0.axis == GGML_BACKEND_SPLIT_AXIS_2) {
+                int32_t expert_base = 0;
+                for (size_t k = 0; k < j; k++) {
+                    for (size_t s = 0; s < ss0.n_segments; s++) {
+                        expert_base += (int32_t)(ss0.ne[s*n_simple_bufs + k] * ss0.nr[s]);
+                    }
+                }
+                t_ij->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t) - 1] = expert_base + 1;
+            }
+        }
         ggml_set_name(t_ij, tensor->name);
         t_ij->buffer = simple_buf;
         t_ij->view_src = tensor->view_src;
@@ -1598,6 +1644,69 @@ struct ggml_backend_meta_context {
             bufs.resize(n_reduce_steps);
         }
     };
+    // [TAG_META_SUBMIT] persistent per-device submission workers for prefill-sized MoE graphs
+    // (env GGML_META_SUBMIT_THREADS). The per-backend graph_compute_async calls are not truly
+    // async at prefill: the mul_mat_id fallback does host-side work (D2H ids copy + sort + H2D,
+    // two stream syncs, one cuBLAS launch per expert), so issuing the devices from one thread
+    // serializes them. Worker w services backend w+1 exclusively (backend 0 runs on the main
+    // thread), keeping thread_local CUDA-side caches consistently thread-affine.
+    struct submit_pool {
+        struct slot {
+            ggml_backend_t backend = nullptr;
+            ggml_cgraph *  cgraph  = nullptr;
+            ggml_status    status  = GGML_STATUS_SUCCESS;
+        };
+        std::mutex               m;
+        std::condition_variable  cv_go;
+        std::condition_variable  cv_done;
+        uint64_t                 seq       = 0;
+        size_t                   n_pending = 0;
+        bool                     stop      = false;
+        std::vector<slot>        slots;
+        std::vector<std::thread> threads;
+        // [TAG_META_SUBMIT] mode-2 (SPMD): when set, worker w runs (*spmd_job)(w+1) — the whole
+        // per-device subgraph loop including that device's allreduces — instead of one cgraph.
+        const std::function<ggml_status(size_t)> * spmd_job = nullptr;
+
+        explicit submit_pool(size_t n_workers) : slots(n_workers) {
+            threads.reserve(n_workers);
+            for (size_t w = 0; w < n_workers; w++) {
+                threads.emplace_back([this, w]() {
+                    uint64_t seen = 0;
+                    for (;;) {
+                        std::unique_lock<std::mutex> lock(m);
+                        cv_go.wait(lock, [&]() { return stop || seq != seen; });
+                        if (stop) {
+                            return;
+                        }
+                        seen = seq;
+                        slot & s = slots[w];
+                        const auto * job = spmd_job;
+                        lock.unlock();
+                        s.status = job != nullptr ? (*job)(w + 1)
+                                                  : ggml_backend_graph_compute_async(s.backend, s.cgraph);
+                        lock.lock();
+                        n_pending--;
+                        if (n_pending == 0) {
+                            cv_done.notify_one();
+                        }
+                    }
+                });
+            }
+        }
+
+        ~submit_pool() {
+            {
+                std::lock_guard<std::mutex> lock(m);
+                stop = true;
+            }
+            cv_go.notify_all();
+            for (auto & t : threads) {
+                t.join();
+            }
+        }
+    };
+
     std::string                 name;
     std::vector<backend_config> backend_configs;
     ggml_context_ptr            ctx;
@@ -1609,9 +1718,11 @@ struct ggml_backend_meta_context {
     size_t                      max_subgraphs = 0;
     size_t                      n_subgraphs   = 0;
     uint64_t                    uid           = 0;
+    std::unique_ptr<submit_pool> submit;
 
-    void *                               comm_ctx       = nullptr;
-    ggml_backend_comm_allreduce_tensor_t comm_allreduce = nullptr;
+    void *                                      comm_ctx              = nullptr;
+    ggml_backend_comm_allreduce_tensor_t        comm_allreduce        = nullptr;
+    ggml_backend_comm_allreduce_tensor_single_t comm_allreduce_single = nullptr; // [TAG_META_SUBMIT] optional, SPMD mode
 
     ggml_backend_meta_context(ggml_backend_dev_t meta_dev, const char * params) {
         const size_t n_devs = ggml_backend_meta_dev_n_devs(meta_dev);
@@ -1643,10 +1754,22 @@ struct ggml_backend_meta_context {
                 ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                     ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_allreduce_tensor");
             GGML_ASSERT(comm_allreduce != nullptr);
+            comm_allreduce_single = (ggml_backend_comm_allreduce_tensor_single_t)
+                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                    ggml_backend_get_device(simple_backends[0])), "ggml_backend_comm_allreduce_tensor_single");
         }
     }
 
     ~ggml_backend_meta_context() {
+        // [TAG_META_SUBMIT] join workers before the backends they reference are freed below
+        submit.reset();
+        // Drain in-flight work on every device before tearing down the comm: an asynchronously
+        // replayed decode CUDA graph may still hold NCCL kernels in flight on secondary devices,
+        // and destroying the comm under them poisons their context ("unspecified launch failure"
+        // at the subsequent cudaStreamDestroy).
+        for (auto & bc : backend_configs) {
+            ggml_backend_synchronize(bc.backend);
+        }
         if (comm_ctx != nullptr) {
             ggml_backend_comm_free_t comm_free = (ggml_backend_comm_free_t) ggml_backend_reg_get_proc_address(
                 ggml_backend_dev_backend_reg(ggml_backend_get_device(backend_configs[0].backend)), "ggml_backend_comm_free");
@@ -1774,6 +1897,38 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     const size_t n_backends = ggml_backend_meta_n_backends(backend);
     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
 
+    // [TAG_META_SUBMIT] engage per-device submission threads only for prefill-sized MoE graphs:
+    // decode-sized graphs measured NEGATIVE under a threaded driver (scheduler jitter on tiny
+    // launches), while at prefill the host-side mul_mat_id sort/launch work dominates and
+    // overlaps across devices. Gate = graph contains a MUL_MAT_ID with >= min_tokens tokens.
+    // Mode 1 (any value): per-subgraph worker dispatch, allreduce on the main thread.
+    // Mode 2 ("2", SPMD): each worker runs its device's WHOLE subgraph loop incl. allreduce.
+    static const int submit_threads_mode = []() {
+        const char * s = getenv("GGML_META_SUBMIT_THREADS");
+        if (s == nullptr) {
+            return 0;
+        }
+        return atoi(s) >= 2 ? 2 : 1;
+    }();
+    static const bool submit_threads = submit_threads_mode != 0;
+    static const int64_t submit_min_tokens = []() {
+        const char * s = getenv("GGML_META_SUBMIT_MIN_TOKENS");
+        return s != nullptr ? atoll(s) : 64;
+    }();
+    bool use_submit_threads = false;
+    if (submit_threads && n_backends > 1) {
+        for (int i = 0; i < cgraph->n_nodes; i++) {
+            const ggml_tensor * node = cgraph->nodes[i];
+            if (node->op == GGML_OP_MUL_MAT_ID && node->ne[2] >= submit_min_tokens) {
+                use_submit_threads = true;
+                break;
+            }
+        }
+    }
+    if (use_submit_threads && !backend_ctx->submit) {
+        backend_ctx->submit.reset(new ggml_backend_meta_context::submit_pool(n_backends - 1));
+    }
+
     // If the previous cgraph had a defined UID it can be used to skip rebuilding the subgraphs per simple backend.
     const bool needs_rebuild = (cgraph->uid == 0) || (cgraph->uid != backend_ctx->uid);
 
@@ -1866,6 +2021,95 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     }
                 };
 
+                // [TAG_MOE_EP] Expert-parallel MoE chain: gate/up MUL_MAT_ID outputs are
+                // disjoint-support partials (each (token,slot) row is wholly owned by the device
+                // holding its expert, zeros elsewhere) and every op between them and the down
+                // MUL_MAT_ID maps zero rows to zero rows (GLU/SILU/GELU/RELU/CLAMP/MUL). The
+                // all-reduce can therefore be delayed through the whole expert FFN to the
+                // weighted slot-sum handled below, removing 2 of the 3 FFN all-reduces per
+                // layer. Guarded on the expert weights being sharded on the expert axis
+                // (SPLIT_AXIS_2) so general row/col TP behavior is unchanged.
+                auto is_ep_mmid = [&](const ggml_tensor * t) {
+                    return t->op == GGML_OP_MUL_MAT_ID && t->src[0] != nullptr &&
+                        ggml_backend_meta_get_split_state(t->src[0], false).axis == GGML_BACKEND_SPLIT_AXIS_2;
+                };
+                if (is_ep_mmid(node)) {
+                    ggml_tensor * part[6]     = { node };
+                    int           part_id[6]  = { id, -1, -1, -1, -1, -1 };
+                    bool          consumed[6] = { false };
+                    int n_part = 1;
+                    int id_ep  = id;
+                    while (id_ep + 1 < cgraph->n_nodes && n_part < 6) {
+                        ggml_tensor * next = cgraph->nodes[id_ep+1];
+                        auto part_idx = [&](const ggml_tensor * t) {
+                            for (int k = 0; k < n_part; k++) {
+                                if (part[k] == t) {
+                                    return k;
+                                }
+                            }
+                            return -1;
+                        };
+                        // The down MUL_MAT_ID consuming the chain as its input ends the walk.
+                        if (is_ep_mmid(next) && next->src[1] != nullptr && part_idx(next->src[1]) >= 0) {
+                            consumed[part_idx(next->src[1])] = true;
+                            // Safe only if every chain member was consumed exactly once, inside
+                            // the chain: a member with another (later) consumer would be read
+                            // before its all-reduce.
+                            bool safe = true;
+                            for (int q = 0; q < n_part; q++) {
+                                safe = safe && consumed[q] && ggml_node_get_use_count(cgraph, part_id[q]) == 1;
+                            }
+                            if (safe) {
+                                node   = next;
+                                id     = id_ep + 1;
+                                idr    = id;
+                                n_used = ggml_node_get_use_count(cgraph, id);
+                            }
+                            break;
+                        }
+                        // The sibling gate/up MUL_MAT_ID over the mirrored FFN input.
+                        if (is_ep_mmid(next) && next->src[1] != nullptr && part_idx(next->src[1]) < 0 &&
+                                ggml_backend_meta_get_split_state(next->src[1], false).axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+                            part_id[n_part] = id_ep + 1;
+                            part[n_part++]  = next;
+                            id_ep++;
+                            continue;
+                        }
+                        // Zero-preserving elementwise op over chain members (+ mirrored operands).
+                        const bool zero_preserving =
+                            next->op == GGML_OP_GLU || next->op == GGML_OP_MUL || next->op == GGML_OP_CLAMP ||
+                            (next->op == GGML_OP_UNARY && (ggml_get_unary_op(next) == GGML_UNARY_OP_SILU ||
+                                                           ggml_get_unary_op(next) == GGML_UNARY_OP_GELU ||
+                                                           ggml_get_unary_op(next) == GGML_UNARY_OP_RELU));
+                        bool consumes = false;
+                        bool srcs_ok  = true;
+                        for (int s = 0; s < GGML_MAX_SRC && srcs_ok; s++) {
+                            if (next->src[s] == nullptr) {
+                                continue;
+                            }
+                            const int k = part_idx(next->src[s]);
+                            if (k >= 0) {
+                                // each chain member must have exactly one consumer (this one)
+                                consumes = true;
+                                srcs_ok  = srcs_ok && !consumed[k];
+                                consumed[k] = true;
+                            } else if (ggml_backend_meta_get_split_state(next->src[s], false).axis != GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+                                srcs_ok = false;
+                            }
+                        }
+                        if (!consumes && srcs_ok) { // unrelated mirrored node interleaved in the chain
+                            id_ep++;
+                            continue;
+                        }
+                        if (!srcs_ok || !zero_preserving) {
+                            break; // unsafe -> keep the immediate all-reduce at node i
+                        }
+                        part_id[n_part] = id_ep + 1;
+                        part[n_part++]  = next;
+                        id_ep++;
+                    }
+                }
+
                 skip_unrelated();
                 if (id + 1 >= cgraph->n_nodes) {
                     return idr;
@@ -1938,15 +2182,21 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     continue;
                 }
                 const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(node, /*assume_sync =*/ false);
-                if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
-                    max_tmp_size = std::max(max_tmp_size, ggml_nbytes(node));
-                }
                 const bool new_subgraph = i + 1 == cgraph->n_nodes || split_state.axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL;
                 if (!new_subgraph) {
                     continue;
                 }
 
                 const int i_delayed = get_i_delayed(i);
+
+                // The tmp buffers only ever hold the tensor that is actually all-reduced, which
+                // with a delayed all-reduce is nodes[i_delayed] (e.g. the weighted expert SUM,
+                // [ne0, n_tokens]) — NOT the (much larger) boundary node itself (e.g. the
+                // [ne0, n_expert_used, n_tokens] MUL_MAT_ID output). Sizing by the boundary node
+                // over-allocated the tmp buffers up to 4x and OOMed large-ubatch configs.
+                if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_PARTIAL) {
+                    max_tmp_size = std::max(max_tmp_size, ggml_nbytes(cgraph->nodes[i_delayed]));
+                }
 
                 // If we can delay the AllReduce we need to consider the interaction with zero-sized tensor slices.
                 // A backend with such a slice would normally have valid data after participating in the AllReduce with a node that has
@@ -2183,12 +2433,109 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     };
 
 
-    for (size_t i = 0; i < backend_ctx->n_subgraphs; i++) {
-        for (size_t j = 0; j < n_backends; j++) {
+    // [TAG_META_SUBMIT] mode 2 (SPMD): each device's worker runs the ENTIRE subgraph loop,
+    // including its own convert->allreduce->convert on its own comm. This removes the
+    // per-subgraph join and the main-thread serial allreduce issue that left the GPUs idle
+    // between bursts (P7 nsys: ~6.4ms gap before every allreduce kernel, devices ~48% busy).
+    // Per-comm collective order is unchanged (every device walks subgraphs in order), and the
+    // NCCL ring order is fixed by comm topology, so results are byte-identical to mode 1.
+    const bool use_spmd = use_submit_threads && submit_threads_mode >= 2 &&
+        backend_ctx->comm_ctx != nullptr && backend_ctx->comm_allreduce_single != nullptr &&
+        backend_ctx->comm_allreduce_single(backend_ctx->comm_ctx, nullptr, 0); // availability probe
+    if (use_spmd) {
+        static const bool dbg_ar = getenv("GGML_META_DEBUG_ALLREDUCE") != nullptr;
+        const std::function<ggml_status(size_t)> spmd_job = [&](size_t j) -> ggml_status {
             auto & bcj = backend_ctx->backend_configs[j];
-            const ggml_status status = ggml_backend_graph_compute_async(bcj.backend, bcj.cgraphs[i].cgraph_main);
-            if (status != GGML_STATUS_SUCCESS) {
-                return status;
+            for (size_t i = 0; i < backend_ctx->n_subgraphs; i++) {
+                const ggml_status status = ggml_backend_graph_compute_async(bcj.backend, bcj.cgraphs[i].cgraph_main);
+                if (status != GGML_STATUS_SUCCESS) {
+                    return status;
+                }
+                if (i < backend_ctx->n_subgraphs - 1) {
+                    ggml_cgraph * cgraph_ij = bcj.cgraphs[i].cgraph_main;
+                    ggml_tensor * node = cgraph_ij->nodes[cgraph_ij->n_nodes - 1];
+                    if (dbg_ar && j == 0) {
+                        static std::atomic<long> ar_count{0};
+                        const long c = ar_count++;
+                        if (c < 400) {
+                            GGML_LOG_WARN("meta allreduce #%ld: %-24s %zu bytes\n", c, node->name, ggml_nbytes(node));
+                        }
+                    }
+                    if (!backend_ctx->comm_allreduce_single(backend_ctx->comm_ctx, node, (int) j)) {
+                        return GGML_STATUS_FAILED;
+                    }
+                }
+            }
+            return GGML_STATUS_SUCCESS;
+        };
+        auto & pool = *backend_ctx->submit;
+        {
+            std::lock_guard<std::mutex> lock(pool.m);
+            pool.spmd_job  = &spmd_job;
+            pool.n_pending = n_backends - 1;
+            pool.seq++;
+        }
+        pool.cv_go.notify_all();
+        const ggml_status status0 = spmd_job(0);
+        {
+            std::unique_lock<std::mutex> lock(pool.m);
+            pool.cv_done.wait(lock, [&]() { return pool.n_pending == 0; });
+            pool.spmd_job = nullptr;
+        }
+        if (status0 != GGML_STATUS_SUCCESS) {
+            return status0;
+        }
+        for (size_t w = 0; w < n_backends - 1; w++) {
+            if (pool.slots[w].status != GGML_STATUS_SUCCESS) {
+                return pool.slots[w].status;
+            }
+        }
+        static const bool dbg_sync_spmd = getenv("GGML_META_DEBUG_SYNC") != nullptr;
+        if (dbg_sync_spmd) {
+            for (size_t j = 0; j < n_backends; j++) {
+                ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+            }
+        }
+        return GGML_STATUS_SUCCESS;
+    }
+
+    for (size_t i = 0; i < backend_ctx->n_subgraphs; i++) {
+        if (use_submit_threads) {
+            // [TAG_META_SUBMIT] backends 1..n-1 on workers, backend 0 inline, then join.
+            // The allreduce below stays on this thread so collective ordering is unchanged.
+            auto & pool = *backend_ctx->submit;
+            {
+                std::lock_guard<std::mutex> lock(pool.m);
+                for (size_t j = 1; j < n_backends; j++) {
+                    auto & bcj = backend_ctx->backend_configs[j];
+                    pool.slots[j - 1].backend = bcj.backend;
+                    pool.slots[j - 1].cgraph  = bcj.cgraphs[i].cgraph_main;
+                }
+                pool.n_pending = n_backends - 1;
+                pool.seq++;
+            }
+            pool.cv_go.notify_all();
+            auto & bc0 = backend_ctx->backend_configs[0];
+            const ggml_status status0 = ggml_backend_graph_compute_async(bc0.backend, bc0.cgraphs[i].cgraph_main);
+            {
+                std::unique_lock<std::mutex> lock(pool.m);
+                pool.cv_done.wait(lock, [&]() { return pool.n_pending == 0; });
+            }
+            if (status0 != GGML_STATUS_SUCCESS) {
+                return status0;
+            }
+            for (size_t w = 0; w < n_backends - 1; w++) {
+                if (pool.slots[w].status != GGML_STATUS_SUCCESS) {
+                    return pool.slots[w].status;
+                }
+            }
+        } else {
+            for (size_t j = 0; j < n_backends; j++) {
+                auto & bcj = backend_ctx->backend_configs[j];
+                const ggml_status status = ggml_backend_graph_compute_async(bcj.backend, bcj.cgraphs[i].cgraph_main);
+                if (status != GGML_STATUS_SUCCESS) {
+                    return status;
+                }
             }
         }
 
@@ -2202,6 +2549,15 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     ggml_cgraph * cgraph_ij = bcj.cgraphs[i].cgraph_main;
                     nodes.push_back(cgraph_ij->nodes[cgraph_ij->n_nodes-1]);
                 }
+                // [TAG_MOE_EP] debug census of allreduce boundaries (name + bytes), first 400 only
+                static const bool dbg_ar = getenv("GGML_META_DEBUG_ALLREDUCE") != nullptr;
+                if (dbg_ar) {
+                    static std::atomic<long> ar_count{0};
+                    const long c = ar_count++;
+                    if (c < 400) {
+                        GGML_LOG_WARN("meta allreduce #%ld: %-24s %zu bytes\n", c, nodes[0]->name, ggml_nbytes(nodes[0]));
+                    }
+                }
                 backend_allreduce_success = backend_ctx->comm_allreduce(backend_ctx->comm_ctx, nodes.data());
             }
 
@@ -2211,6 +2567,14 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     return status;
                 }
             }
+        }
+    }
+    // [TAG_MOE_EP] debug: force a full-device sync after every graph so a latent async fault
+    // aborts at the step it occurs instead of surfacing at teardown.
+    static const bool dbg_sync = getenv("GGML_META_DEBUG_SYNC") != nullptr;
+    if (dbg_sync) {
+        for (size_t j = 0; j < n_backends; j++) {
+            ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
         }
     }
     return GGML_STATUS_SUCCESS;

@@ -4,6 +4,11 @@
 
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11);
 
+// Invalidate the GGML_CUDA_Q8_1_DEDUP rolling cache (call once per graph evaluation:
+// arena/pool addresses repeat across evals with different contents, so hits must not
+// survive an eval boundary).
+void ggml_cuda_mmvq_q8_1_cache_next_gen();
+
 // Returns the maximum batch size for which MMVQ should be used for MUL_MAT_ID,
 // based on the quantization type and GPU architecture (compute capability).
 int get_mmvq_mmid_max_batch(ggml_type type, int cc);

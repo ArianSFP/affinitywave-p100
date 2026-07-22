@@ -427,6 +427,12 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
+    // Drain in-flight device work (e.g. an asynchronously replayed decode CUDA graph on a
+    // secondary tensor-split device) before member destruction starts freeing device buffers
+    // out from under it.
+    if (sched) {
+        ggml_backend_sched_synchronize(sched.get());
+    }
     if (!model.hparams.no_alloc) {
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
             ggml_backend_t             backend = backend_ptrs[i];

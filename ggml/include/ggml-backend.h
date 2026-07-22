@@ -206,6 +206,10 @@ extern "C" {
     typedef void * (*ggml_backend_comm_init_t)(ggml_backend_t * backends, size_t n_backends);
     typedef void   (*ggml_backend_comm_free_t)(void * comm_ctx);
     typedef bool   (*ggml_backend_comm_allreduce_tensor_t)(void * comm_ctx, struct ggml_tensor ** tensors);
+    // Per-device variant for callers that drive each device from its own thread (one comm per
+    // thread). Collective order per comm must match across devices. tensor == NULL probes
+    // availability (true iff the backend can service single-device calls, e.g. NCCL).
+    typedef bool   (*ggml_backend_comm_allreduce_tensor_single_t)(void * comm_ctx, struct ggml_tensor * tensor, int backend_idx);
 
     // Split buffer type for tensor parallelism (old)
     typedef ggml_backend_buffer_type_t   (*ggml_backend_split_buffer_type_t)(int main_device, const float * tensor_split);

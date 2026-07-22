@@ -1257,6 +1257,51 @@ static bool ggml_backend_cuda_comm_allreduce_nccl(
 
     return true;
 }
+
+// [TAG_META_SUBMIT] Single-device AllReduce for the SPMD submit path (one host thread per
+// device/comm, the canonical NCCL pattern). No ncclGroupStart/End: group semantics are only
+// needed when ONE thread issues collectives for MULTIPLE comms. Ring order is fixed by the
+// comm topology, not by enqueue order, so results are byte-identical to the grouped call.
+static bool ggml_backend_cuda_comm_allreduce_nccl_single(
+        ggml_backend_cuda_comm_context * comm_ctx, struct ggml_tensor * tensor, int idx) {
+    const int64_t ne = ggml_nelements(tensor);
+    if (ne == 0) {
+        return true;
+    }
+    GGML_ASSERT(ggml_is_contiguously_allocated(tensor));
+
+    const size_t n_backends = comm_ctx->backends.size();
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) comm_ctx->backends[idx]->context;
+    ggml_cuda_set_device(cuda_ctx->device);
+
+    // Same small-tensor FP32 heuristic as the grouped path:
+    if ((n_backends <= 2 && ne < 32768) || (n_backends == 3 && ne < 131072) || (n_backends >= 4 && ne < 262144)) {
+        if ((tensor->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            CUDA_CHECK(cudaMemsetAsync(tensor->data, 0, ggml_nbytes(tensor), cuda_ctx->stream()));
+        }
+        NCCL_CHECK(ncclAllReduce(tensor->data, tensor->data, ne, ncclFloat, ncclSum, comm_ctx->comms[idx], cuda_ctx->stream()));
+        return true;
+    }
+
+    to_bf16_cuda_t to_bf16 = ggml_get_to_bf16_cuda(GGML_TYPE_F32);
+    to_fp32_cuda_t to_fp32 = ggml_get_to_fp32_cuda(GGML_TYPE_BF16);
+
+    ggml_cuda_pool_alloc<nv_bfloat16> tmp(cuda_ctx->pool());
+    tmp.alloc(ne);
+    if (tensor->flags & GGML_TENSOR_FLAG_COMPUTE) {
+        to_bf16(tensor->data, tmp.get(), ne, cuda_ctx->stream());
+    } else {
+        CUDA_CHECK(cudaMemsetAsync(tmp.get(), 0, ne * sizeof(nv_bfloat16), cuda_ctx->stream()));
+    }
+    CUDA_CHECK(cudaGetLastError());
+
+    NCCL_CHECK(ncclAllReduce(tmp.get(), tmp.get(), ne, ncclBfloat16, ncclSum, comm_ctx->comms[idx], cuda_ctx->stream()));
+
+    to_fp32(tmp.get(), (float *) tensor->data, ne, cuda_ctx->stream());
+    CUDA_CHECK(cudaGetLastError());
+
+    return true;
+}
 #endif // GGML_USE_NCCL
 
 // Run the internal AR pipeline.  Returns false on unsupported / failed input
@@ -1434,6 +1479,28 @@ static bool ggml_backend_cuda_comm_allreduce_tensor(void * comm_ctx_v, struct gg
     }
     auto * comm_ctx = static_cast<ggml_backend_cuda_comm_context *>(comm_ctx_v);
     return comm_ctx->try_allreduce(comm_ctx, tensors);
+}
+
+// [TAG_META_SUBMIT] Per-device dispatch for SPMD submission (one thread per device).
+// Only the NCCL path can be driven per-device; tensor == NULL probes availability.
+static bool ggml_backend_cuda_comm_allreduce_tensor_single(void * comm_ctx_v, struct ggml_tensor * tensor, int backend_idx) {
+    if (comm_ctx_v == nullptr) {
+        return false;
+    }
+    auto * comm_ctx = static_cast<ggml_backend_cuda_comm_context *>(comm_ctx_v);
+#ifdef GGML_USE_NCCL
+    if (comm_ctx->try_allreduce != ggml_backend_cuda_comm_try_allreduce_nccl) {
+        return false;
+    }
+    if (tensor == nullptr) {
+        return true; // availability probe
+    }
+    return ggml_backend_cuda_comm_allreduce_nccl_single(comm_ctx, tensor, backend_idx);
+#else
+    GGML_UNUSED(tensor);
+    GGML_UNUSED(backend_idx);
+    return false;
+#endif // GGML_USE_NCCL
 }
 
 ggml_backend_buffer_type_t ggml_backend_cuda_split_buffer_type(int main_device, const float * tensor_split) {
@@ -2631,6 +2698,23 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     }
 }
 
+// [TAG_MOE_BGEMM] Stage B1 helper: compact the valid columns of the padded batched-GEMM
+// output back into the packed dst_sorted layout. Grid = (maxM, n_expert); block covers the
+// output feature dim M (=dst->ne[0]). Column t of expert e is copied only if t < tok[e].
+static __global__ void k_moe_bgemm_compact(float * __restrict__ dst_packed, const float * __restrict__ dpad,
+        const int32_t * __restrict__ off, const int32_t * __restrict__ tok, int maxM, int M) {
+    const int e = blockIdx.y;
+    const int t = blockIdx.x;
+    if (t >= tok[e]) {
+        return;
+    }
+    const float * s = dpad       + (size_t)(e*maxM + t)*M;
+    float       * d = dst_packed + (size_t)(off[e] + t)*M;
+    for (int i = threadIdx.x; i < M; i += blockDim.x) {
+        d[i] = s[i];
+    }
+}
+
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
@@ -2643,6 +2727,16 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     GGML_TENSOR_BINARY_OP_LOCALS
 
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+
+    // [TAG_MOE_EP] Stage C expert-parallel: op_params[15] = expert_base+1 (0 = no EP, the
+    // default for every non-EP backend/op). Under EP this device holds ne02 LOCAL experts
+    // [expert_base, expert_base+ne02); the shared ids tensor still carries GLOBAL indices, so
+    // pairs whose selected expert is non-local are skipped and their output rows zero-filled
+    // (the meta backend's PARTIAL all-reduce sums the per-shard outputs into the full result).
+    // The MMVQ decode path reads the stamp itself; MMQ/MMF are EP-unaware -> gated off below.
+    const int32_t ep_param    = dst->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t) - 1];
+    const bool    moe_ep      = ep_param != 0;
+    const int32_t expert_base = moe_ep ? ep_param - 1 : 0;
 
     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
     if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
@@ -2662,12 +2756,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             }
         }
 
-        if (ggml_cuda_should_use_mmq(src0->type, cc, ne12, /*n_experts=*/ne02)) {
+        if (!moe_ep && ggml_cuda_should_use_mmq(src0->type, cc, ne12, /*n_experts=*/ne02)) {
             ggml_cuda_mul_mat_q(ctx, src0, src1, ids, dst);
             return;
         }
 
-        if (ggml_cuda_should_use_mmf(src0->type, cc, WARP_SIZE, src0->ne, src0->nb, src1->ne[2], /*mul_mat_id=*/true)) {
+        if (!moe_ep && ggml_cuda_should_use_mmf(src0->type, cc, WARP_SIZE, src0->ne, src0->nb, src1->ne[2], /*mul_mat_id=*/true)) {
             ggml_cuda_mul_mat_f(ctx, src0, src1, ids, dst);
             return;
         }
@@ -2680,8 +2774,19 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     GGML_ASSERT(nb12 % nb11 == 0);
     GGML_ASSERT(nb2  % nb1  == 0);
 
-    const ggml_type type_src1_sorted = (src0->type == GGML_TYPE_F16 && !fast_fp16_hardware_available(cc))
-        || ggml_is_quantized(src0->type) ? GGML_TYPE_F32 : src0->type;
+    // [TAG_MOE_BGEMM] Stage B1 uses f16 src1 (weights also dequant to f16) so the batched
+    // cuBLAS GEMM is f16-in / f32-accumulate (COMPUTE_32F) — same precision as the
+    // per-expert path (f16 storage, f32 accumulate) and half the VRAM of f32-in.
+    static const bool moe_bgemm = getenv("GGML_CUDA_MOE_BGEMM") != nullptr;
+    // [TAG_MOE_F16GATHER] gather src1 rows directly to f16 instead of f32: the per-expert cuBLAS
+    // GEMM converts its src1 slice f32->f16 anyway (same round-to-nearest), so this is
+    // byte-identical while halving gather write traffic and eliminating the per-expert
+    // convert_unary launches (nsys: get_rows 11.3% + convert 4.8% of kernel time).
+    static const bool moe_f16gather = getenv("GGML_CUDA_MOE_F16GATHER") != nullptr;
+    const ggml_type type_src1_sorted =
+        ((moe_bgemm && !moe_ep) || moe_f16gather) && ggml_is_quantized(src0->type) ? GGML_TYPE_F16 :
+        (((src0->type == GGML_TYPE_F16 && !fast_fp16_hardware_available(cc)) || ggml_is_quantized(src0->type))
+            ? GGML_TYPE_F32 : src0->type);
     const ggml_type type_dst_sorted  = GGML_TYPE_F32;
     const size_t ts_src1_sorted = ggml_type_size(type_src1_sorted);
     const size_t ts_dst_sorted  = ggml_type_size(type_dst_sorted);
@@ -2689,55 +2794,387 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     const int64_t n_expert_used = ids->ne[0];
     const int64_t ne_get_rows = ne12 * n_expert_used;
 
-    std::vector<int32_t> ids_to_sorted_host;
-    ids_to_sorted_host.reserve(2*ne_get_rows);
-    std::vector<int32_t> ids_from_sorted_host(ne_get_rows);
-
-    ggml_cuda_pool_alloc<int32_t> ids_buf_dev(ctx.pool(), 2*ne_get_rows);
-
     std::vector<int32_t> tokens_per_expert(ne02);
 
-    ggml_cuda_pool_alloc<char> src1_sorted(ctx.pool(), ne12*n_expert_used*ne10*ts_src1_sorted);
-    ggml_cuda_pool_alloc<char>  dst_sorted(ctx.pool(), ne2 *n_expert_used* ne0*ts_dst_sorted);
+    // [TAG_MOE_BGEMM] Stage B1: single batched cuBLAS GEMM over all experts (env
+    // GGML_CUDA_MOE_BGEMM), replacing the 256 per-expert cuBLAS calls. It reads maxM
+    // (<= ne12) columns per expert from the packed src1_sorted via an overlap trick, so
+    // over-allocate src1_sorted by ne12 rows of slack to keep the last expert's read
+    // in-bounds (slack rows hold garbage that only lands in discarded output columns).
+    // EP uses the per-expert loop (B1 bgemm is rejected) and gets one extra dst_sorted row as
+    // the shared ZERO_ROW that non-local (token,slot) pairs scatter from.
+    const bool moe_bgemm_eff = moe_bgemm && !moe_ep;
+    const int64_t src1_slack_rows = moe_bgemm_eff ? ne12 : 0;
+    const int64_t dst_extra_rows  = moe_ep ? 1 : 0;
+    ggml_cuda_pool_alloc<char> src1_sorted(ctx.pool(), (ne12*n_expert_used + src1_slack_rows)*ne10*ts_src1_sorted);
+    ggml_cuda_pool_alloc<char>  dst_sorted(ctx.pool(), (ne2 *n_expert_used + dst_extra_rows)* ne0*ts_dst_sorted);
 
-    std::vector<char> ids_host(ggml_nbytes(ids));
-    CUDA_CHECK(cudaMemcpyAsync(ids_host.data(), ids->data, ggml_nbytes(ids), cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    // [TAG_MOE_CSORT] Stage A+ step 1: stable counting sort of (token,slot) pairs by
+    // expert. Env-gated (GGML_CUDA_MOE_CSORT), default off. The default path is the
+    // original O(ne02 * ne12 * n_expert_used) triple loop (~94k tiny sorts/ubatch).
+    // The counting sort is O(ne12 * n_expert_used + ne02) and, being stable in
+    // token-major/slot order within each expert block, yields the IDENTICAL row order
+    // -> byte-identical output. (Precedent: SYCL PR #23142, +70% on this model.)
+    static const bool moe_csort = getenv("GGML_CUDA_MOE_CSORT") != nullptr;
+    // [TAG_MOE_CSORT_REUSE] Stage A+ step 2: memoize the sort across a layer's
+    // up/gate/down mul_mat_id (all three reference the SAME ids ggml_tensor object,
+    // which is distinct per layer). On a hit we skip the D2H + host sort + H2D and the
+    // two stream syncs (3 sorts+6 syncs/layer -> 1 sort+2 syncs/layer). The single-entry
+    // thread_local cache is keyed on the ids object pointer + device + dims; because
+    // every other layer's ids (a different object) runs between two evals of the same
+    // layer, the entry evicts naturally and can never serve a stale sort. Byte-identical.
+    static const bool moe_reuse = moe_csort && getenv("GGML_CUDA_MOE_CSORT_REUSE") != nullptr;
+    struct moe_sort_cache {
+        const void * ids_ptr = nullptr;
+        int64_t ne12 = -1, neu = -1, ne11 = -1, ne02 = -1;
+        int32_t expert_base_c = 0;   // [TAG_MOE_EP] shard base this entry was sorted for
+        int64_t n_local_c = -1;      // [TAG_MOE_EP] local pair count of the cached sort
+        int device = -1;
+        int32_t * dev = nullptr;  // [ids_to_sorted(n_local) | ids_from_sorted(ne_get_rows)] int32
+        size_t   cap = 0;         // capacity in int32 elements
+        std::vector<int32_t> tpe; // tokens_per_expert
+    };
+    // [TAG_MOE_EP] per-DEVICE entries: under -sm tensor one host thread services all devices in
+    // turn, so a single entry would thrash (device key changes every call). With one slot per
+    // device, a layer's up/gate/down on the same device share one sort (12 -> 4 sorts/layer on
+    // 4 GPUs), and the same-layer-next-ubatch staleness argument from the single-entry design
+    // still holds per slot (another layer's ids object always runs in between and evicts).
+    static thread_local moe_sort_cache mcache_arr[GGML_CUDA_MAX_DEVICES];
+    // [TAG_MOE_P8] persistent PINNED host staging (env GGML_CUDA_MOE_PINNED). The pageable
+    // std::vector D2H is not truly async: the API call itself blocks until the copy runs, and
+    // the 4 submit threads additionally contend on the runtime's pageable-staging locks. With
+    // pinned staging the D2H is a real DMA and the post-H2D sync can be dropped entirely (the
+    // source stays alive; reuse is fenced by the next miss's own drain sync on this stream).
+    struct moe_pin_bufs {
+        char *    ids        = nullptr;  // D2H destination for the ids tensor
+        size_t    ids_cap    = 0;
+        int32_t * sorted     = nullptr;  // H2D source: [ids_to_sorted(n_local) | ids_from_sorted(ne_get_rows)]
+        size_t    sorted_cap = 0;        // in int32 elements
+    };
+    static thread_local moe_pin_bufs pin_arr[GGML_CUDA_MAX_DEVICES];
 
-    for (int64_t i02 = 0; i02 < ne02; ++i02) { // expert matrices
-        for (int64_t i12 = 0; i12 < ne12; ++i12) { // tokens
-            for (int64_t iex = 0; iex < n_expert_used; ++iex) {
-                const int32_t expert_to_use = *(const int32_t *)(ids_host.data() + i12*ids->nb[1] + iex*ids->nb[0]);
-                assert(expert_to_use >= 0 && expert_to_use < ne02);
-                if (expert_to_use == i02) {
-                    ids_from_sorted_host[i12*n_expert_used + iex] = ids_to_sorted_host.size();
-                    ids_to_sorted_host.push_back(i12*ne11 + iex % ne11);
-                    tokens_per_expert[i02]++;
-                    break;
+    const int dev_cur = ggml_cuda_get_device();
+    moe_sort_cache & mcache = mcache_arr[dev_cur];
+    const int32_t * ids_to_sorted;
+    const int32_t * ids_from_sorted;
+    int64_t n_local = ne_get_rows;  // [TAG_MOE_EP] # of (token,slot) pairs routed to LOCAL experts (== ne_get_rows off EP)
+
+    // non-reuse path owns a pool buffer; reuse path owns a persistent cache buffer.
+    ggml_cuda_pool_alloc<int32_t> ids_buf_dev(ctx.pool());
+
+    // The device buffer layout is [ids_to_sorted(n_local) | ids_from_sorted(ne_get_rows)];
+    // off EP n_local == ne_get_rows. Reuse implies the counting-sort layout (csort or EP).
+    const bool moe_reuse_eff = moe_reuse && (moe_csort || moe_ep);
+    const bool cache_hit = moe_reuse_eff && mcache.dev != nullptr
+        && mcache.ids_ptr == (const void *) ids && mcache.device == dev_cur
+        && mcache.ne12 == ne12 && mcache.neu == n_expert_used
+        && mcache.ne11 == ne11 && mcache.ne02 == ne02
+        && mcache.expert_base_c == expert_base && mcache.n_local_c >= 0;
+
+    if (cache_hit) {
+        n_local           = mcache.n_local_c;
+        ids_to_sorted     = mcache.dev;
+        ids_from_sorted   = mcache.dev + n_local;
+        tokens_per_expert = mcache.tpe;
+    } else {
+        static const bool moe_pinned = getenv("GGML_CUDA_MOE_PINNED") != nullptr;
+        const bool use_pinned = moe_pinned && (moe_csort || moe_ep);
+        moe_pin_bufs & pin = pin_arr[dev_cur];
+
+        std::vector<int32_t> ids_to_sorted_host;
+        std::vector<int32_t> ids_from_sorted_host;
+
+        const char * ids_read;           // host copy of the ids tensor (pinned or pageable)
+        std::vector<char> ids_host;
+        if (use_pinned) {
+            if (pin.ids_cap < ggml_nbytes(ids)) {
+                // prior D2H into pin.ids completed before the previous miss's sync -> safe to free
+                if (pin.ids != nullptr) {
+                    CUDA_CHECK(cudaFreeHost(pin.ids));
+                }
+                pin.ids_cap = 2*ggml_nbytes(ids);
+                CUDA_CHECK(cudaMallocHost((void **) &pin.ids, pin.ids_cap));
+            }
+            CUDA_CHECK(cudaMemcpyAsync(pin.ids, ids->data, ggml_nbytes(ids), cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            ids_read = pin.ids;
+        } else {
+            ids_to_sorted_host.reserve(2*ne_get_rows);
+            ids_from_sorted_host.resize(ne_get_rows);
+            ids_host.resize(ggml_nbytes(ids));
+            CUDA_CHECK(cudaMemcpyAsync(ids_host.data(), ids->data, ggml_nbytes(ids), cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            ids_read = ids_host.data();
+        }
+
+        // where pass 2 writes; on the pinned path these point straight into the H2D staging
+        int32_t * to_sorted_out   = nullptr;
+        int32_t * from_sorted_out = nullptr;
+
+        if (moe_csort || moe_ep) {
+            // [TAG_MOE_EP] pass 1: per-LOCAL-expert counts. ids carry GLOBAL indices; le = e - expert_base
+            // is the local expert; under EP a pair with le outside [0,ne02) is non-local and skipped
+            // (its output row is zero-filled via ZERO_ROW below). Off EP, expert_base==0 => le==e.
+            for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                for (int64_t iex = 0; iex < n_expert_used; ++iex) {
+                    const int32_t e = *(const int32_t *)(ids_read + i12*ids->nb[1] + iex*ids->nb[0]);
+                    assert(e >= 0);
+                    const int32_t le = e - expert_base;
+                    if (moe_ep && (le < 0 || le >= ne02)) { continue; }
+                    tokens_per_expert[le]++;
                 }
             }
+            // exclusive prefix sum -> per-expert write cursor; n_local = total local pairs
+            std::vector<int32_t> cur(ne02);
+            n_local = 0;
+            for (int64_t i02 = 0; i02 < ne02; ++i02) {
+                cur[i02] = (int32_t) n_local;
+                n_local += tokens_per_expert[i02];
+            }
+            if (use_pinned) {
+                // safe to (re)alloc here: any prior H2D from pin.sorted was fenced by the drain sync above
+                const size_t need = size_t(n_local) + size_t(ne_get_rows);
+                if (pin.sorted_cap < need) {
+                    if (pin.sorted != nullptr) {
+                        CUDA_CHECK(cudaFreeHost(pin.sorted));
+                    }
+                    pin.sorted_cap = std::max<size_t>(need, 2*size_t(ne_get_rows));
+                    CUDA_CHECK(cudaMallocHost((void **) &pin.sorted, pin.sorted_cap*sizeof(int32_t)));
+                }
+                to_sorted_out   = pin.sorted;
+                from_sorted_out = pin.sorted + n_local;
+            } else {
+                ids_to_sorted_host.resize(n_local);
+                to_sorted_out   = ids_to_sorted_host.data();
+                from_sorted_out = ids_from_sorted_host.data();
+            }
+            const int32_t ZERO_ROW = (int32_t) n_local;  // dst_sorted row that is zeroed; non-local pairs point here
+            // pass 2: stable placement in token-major, slot order (matches the triple loop)
+            for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                for (int64_t iex = 0; iex < n_expert_used; ++iex) {
+                    const int32_t e = *(const int32_t *)(ids_read + i12*ids->nb[1] + iex*ids->nb[0]);
+                    const int32_t le = e - expert_base;
+                    if (moe_ep && (le < 0 || le >= ne02)) {
+                        from_sorted_out[i12*n_expert_used + iex] = ZERO_ROW;
+                        continue;
+                    }
+                    const int32_t pos = cur[le]++;
+                    to_sorted_out[pos]                       = i12*ne11 + iex % ne11;
+                    from_sorted_out[i12*n_expert_used + iex] = pos;
+                }
+            }
+        } else {
+            for (int64_t i02 = 0; i02 < ne02; ++i02) { // expert matrices
+                for (int64_t i12 = 0; i12 < ne12; ++i12) { // tokens
+                    for (int64_t iex = 0; iex < n_expert_used; ++iex) {
+                        const int32_t expert_to_use = *(const int32_t *)(ids_read + i12*ids->nb[1] + iex*ids->nb[0]);
+                        assert(expert_to_use >= 0 && expert_to_use < ne02);
+                        if (expert_to_use == i02) {
+                            ids_from_sorted_host[i12*n_expert_used + iex] = ids_to_sorted_host.size();
+                            ids_to_sorted_host.push_back(i12*ne11 + iex % ne11);
+                            tokens_per_expert[i02]++;
+                            break;
+                        }
+                    }
+                }
+            }
+            n_local = (int64_t) ids_to_sorted_host.size();
+        }
+        GGML_ASSERT(use_pinned || ids_to_sorted_host.size() == size_t(n_local));
+
+        const int64_t n_total = n_local + ne_get_rows;
+
+        int32_t * dstbuf;
+        if (moe_reuse_eff) {
+            if (mcache.device != dev_cur || mcache.cap < size_t(n_total)) {
+                if (mcache.dev != nullptr) {
+                    CUDA_CHECK(cudaFree(mcache.dev));
+                    mcache.dev = nullptr;
+                }
+                ggml_cuda_set_device(dev_cur);
+                // [TAG_MOE_P8] headroom: n_local <= ne_get_rows always, so 2*ne_get_rows covers
+                // every layer of a ubatch. Without it, per-layer n_local jitter caused repeated
+                // cudaFree/cudaMalloc cycles (measured 20ms cudaFree spikes on the submit path).
+                const size_t cap_new = std::max<size_t>(n_total, 2*size_t(ne_get_rows));
+                CUDA_CHECK(cudaMalloc((void **) &mcache.dev, cap_new*sizeof(int32_t)));
+                mcache.cap    = cap_new;
+                mcache.device = dev_cur;
+            }
+            dstbuf = mcache.dev;
+        } else {
+            ids_buf_dev.alloc(n_total);
+            dstbuf = ids_buf_dev.ptr;
+        }
+
+        if (use_pinned) {
+            CUDA_CHECK(cudaMemcpyAsync(dstbuf, pin.sorted, n_total*sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+            // no post-H2D sync: the source is persistent pinned memory, so the copy may ride the
+            // stream; the buffer cannot be overwritten before the next miss's own drain sync.
+        } else {
+            ids_to_sorted_host.insert(ids_to_sorted_host.end(), ids_from_sorted_host.begin(), ids_from_sorted_host.end());
+            CUDA_CHECK(cudaMemcpyAsync(dstbuf, ids_to_sorted_host.data(), n_total*sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+        }
+
+        ids_to_sorted   = dstbuf + 0;
+        ids_from_sorted = dstbuf + n_local;
+
+        if (moe_reuse_eff) {
+            mcache.ids_ptr = (const void *) ids;
+            mcache.ne12 = ne12; mcache.neu = n_expert_used; mcache.ne11 = ne11; mcache.ne02 = ne02;
+            mcache.expert_base_c = expert_base;
+            mcache.n_local_c     = n_local;
+            mcache.tpe  = tokens_per_expert;
         }
     }
-    GGML_ASSERT(ids_to_sorted_host.size() == size_t(ne_get_rows));
-
-    ids_to_sorted_host.insert(ids_to_sorted_host.end(), ids_from_sorted_host.begin(), ids_from_sorted_host.end());
-
-    CUDA_CHECK(cudaMemcpyAsync(ids_buf_dev.ptr, ids_to_sorted_host.data(), 2*ne_get_rows*sizeof(int32_t), cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    const int32_t * ids_to_sorted   = ids_buf_dev.ptr + 0*ne_get_rows;
-    const int32_t * ids_from_sorted = ids_buf_dev.ptr + 1*ne_get_rows;
 
     get_rows_cuda(src1->data, src1->type, ids_to_sorted, src1_sorted.ptr, type_src1_sorted,
         ne10, nb11, nb12, nb13,
-        ne_get_rows, 1, 1, sizeof(int32_t), ne_get_rows*sizeof(int32_t), ne_get_rows*sizeof(int32_t),
-        ne10*ts_src1_sorted, ne_get_rows*ne10*ts_src1_sorted, ne_get_rows*ne10*ts_src1_sorted, stream);
+        n_local, 1, 1, sizeof(int32_t), n_local*sizeof(int32_t), n_local*sizeof(int32_t),
+        ne10*ts_src1_sorted, n_local*ne10*ts_src1_sorted, n_local*ne10*ts_src1_sorted, stream);
     CUDA_CHECK(cudaGetLastError());
 
+    // [TAG_MOE_DBG] GGML_CUDA_MOE_DEBUG_STATS=<n>: for the first n mul_mat_id calls, sync and
+    // print absmax/mean/nan/inf of the gathered src1, the packed GEMM output, and the final
+    // scattered dst. Diffing an OFF vs ON run pins which stage a numeric bug enters at.
+    static const int moe_dbg_budget = [](){ const char * s = getenv("GGML_CUDA_MOE_DEBUG_STATS"); return s ? atoi(s) : 0; }();
+    static std::atomic<int> moe_dbg_left{moe_dbg_budget};
+    const bool moe_dbg = moe_dbg_budget > 0 && moe_dbg_left.fetch_sub(1) > 0;
+    auto moe_dbg_stats = [&](const char * tag, const void * ptr, ggml_type t, int64_t n) {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        std::vector<char> h(n*ggml_type_size(t));
+        CUDA_CHECK(cudaMemcpy(h.data(), ptr, h.size(), cudaMemcpyDeviceToHost));
+        double amax = 0.0, asum = 0.0; int64_t n_nan = 0, n_inf = 0;
+        for (int64_t i = 0; i < n; ++i) {
+            const float v = t == GGML_TYPE_F16 ? __half2float(((const half *) h.data())[i]) : ((const float *) h.data())[i];
+            if (v != v)            { n_nan++; continue; }
+            if (v > 3e38f || v < -3e38f) { n_inf++; continue; }
+            const double a = v < 0 ? -(double) v : (double) v;
+            asum += a; if (a > amax) { amax = a; }
+        }
+        fprintf(stderr, "[moe-dbg d%d] %-8s %-20s %-4s n=%lld ne12=%lld n_local=%lld amax=%.8g mean=%.6g nan=%lld inf=%lld\n",
+            dev_cur, tag, dst->name, ggml_type_name(t), (long long) n, (long long) ne12, (long long) n_local,
+            amax, n ? asum/n : 0.0, (long long) n_nan, (long long) n_inf);
+    };
+    if (moe_dbg) { moe_dbg_stats("GATHER", src1_sorted.ptr, type_src1_sorted, n_local*ne10); }
+
+    if (moe_bgemm && ggml_is_quantized(src0->type) && type_src1_sorted == GGML_TYPE_F16) {
+        // ---- Stage B1: one batched cuBLAS GEMM over all experts (padded to maxM) ----
+        // Semantics identical to the per-expert loop but reduction order changes -> not
+        // byte-identical (KLD-gated). Dequant Q8_0 weights -> f16, f16-in/f32-out GEMM with
+        // COMPUTE_32F into a padded f32 output, then compact valid columns into dst_sorted.
+        GGML_ASSERT(ggml_is_contiguous(src0));
+        const int64_t Kd = ne00;   // contraction dim (= ne10)
+        const int64_t Md = ne01;   // output feature dim (= ne0)
+        const int64_t E  = ne02;   // n_expert
+
+        int64_t maxM = 0;
+        std::vector<int32_t> offsets(E);
+        int32_t run = 0;
+        for (int64_t e = 0; e < E; ++e) {
+            offsets[e] = run;
+            run += tokens_per_expert[e];
+            if (tokens_per_expert[e] > maxM) { maxM = tokens_per_expert[e]; }
+        }
+
+        if (maxM > 0) {
+            const to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(src0->type);
+            const half * src1f = (const half *) src1_sorted.ptr;
+            const float alpha = 1.0f, beta = 0.0f;
+            CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(), stream));
+
+            // Process experts in chunks of GRP to bound transient VRAM (dequant f16 weights
+            // + padded f32 output). One batched cuBLAS GEMM per chunk (256/GRP calls total,
+            // vs 256 in the per-expert loop). Env GGML_CUDA_MOE_BGEMM_GROUP (default 64).
+            static const int64_t GRP = []{ const char * s = getenv("GGML_CUDA_MOE_BGEMM_GROUP");
+                int v = s ? atoi(s) : 64; return (int64_t)(v > 0 ? v : 64); }();
+            for (int64_t g0 = 0; g0 < E; g0 += GRP) {
+                const int64_t gcnt = std::min<int64_t>(GRP, E - g0);
+                int64_t maxMg = 0;
+                for (int64_t e = g0; e < g0 + gcnt; ++e) {
+                    if (tokens_per_expert[e] > maxMg) { maxMg = tokens_per_expert[e]; }
+                }
+                if (maxMg == 0) { continue; }
+
+                // dequant this chunk's weights Q8_0 -> f16 (contiguous [Kd, Md, gcnt])
+                ggml_cuda_pool_alloc<half>  w_f16(ctx.pool(), Kd*Md*gcnt);
+                to_fp16((const char *) src0->data + g0*nb02, w_f16.ptr, Kd*Md*gcnt, stream);
+                CUDA_CHECK(cudaGetLastError());
+
+                // padded f32 output [Md, maxMg, gcnt]
+                ggml_cuda_pool_alloc<float> dpad(ctx.pool(), Md*maxMg*gcnt);
+
+                std::vector<const void *> hA(gcnt), hB(gcnt);
+                std::vector<void *>       hC(gcnt);
+                std::vector<int32_t>      offg(gcnt), tokg(gcnt);
+                for (int64_t j = 0; j < gcnt; ++j) {
+                    const int64_t e = g0 + j;
+                    hA[j]   = w_f16.ptr + j*Kd*Md;
+                    hB[j]   = src1f     + (size_t) offsets[e]*ne10; // overlap-reads maxMg cols
+                    hC[j]   = dpad.ptr  + j*Md*maxMg;
+                    offg[j] = offsets[e];
+                    tokg[j] = tokens_per_expert[e];
+                }
+                ggml_cuda_pool_alloc<const void *> dA(ctx.pool(), gcnt);
+                ggml_cuda_pool_alloc<const void *> dB(ctx.pool(), gcnt);
+                ggml_cuda_pool_alloc<void *>       dC(ctx.pool(), gcnt);
+                ggml_cuda_pool_alloc<int32_t>      d_off(ctx.pool(), gcnt);
+                ggml_cuda_pool_alloc<int32_t>      d_tok(ctx.pool(), gcnt);
+                CUDA_CHECK(cudaMemcpyAsync(dA.ptr,   hA.data(),   gcnt*sizeof(void*),   cudaMemcpyHostToDevice, stream));
+                CUDA_CHECK(cudaMemcpyAsync(dB.ptr,   hB.data(),   gcnt*sizeof(void*),   cudaMemcpyHostToDevice, stream));
+                CUDA_CHECK(cudaMemcpyAsync(dC.ptr,   hC.data(),   gcnt*sizeof(void*),   cudaMemcpyHostToDevice, stream));
+                CUDA_CHECK(cudaMemcpyAsync(d_off.ptr, offg.data(), gcnt*sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+                CUDA_CHECK(cudaMemcpyAsync(d_tok.ptr, tokg.data(), gcnt*sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+
+                CUBLAS_CHECK(cublasGemmBatchedEx(ctx.cublas_handle(), CUBLAS_OP_T, CUBLAS_OP_N,
+                        Md, maxMg, Kd,
+                        &alpha, dA.ptr, CUDA_R_16F, Kd,
+                                dB.ptr, CUDA_R_16F, ne10,
+                        &beta,  dC.ptr, CUDA_R_32F, Md,
+                        gcnt, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+
+                dim3 grid((unsigned) maxMg, (unsigned) gcnt);
+                k_moe_bgemm_compact<<<grid, 256, 0, stream>>>((float *) dst_sorted.ptr, dpad.ptr, d_off.ptr, d_tok.ptr, (int) maxMg, (int) Md);
+                CUDA_CHECK(cudaGetLastError());
+            }
+        }
+    } else {
     char * src1_data_cur = (char *) src1_sorted.ptr;
     char *  dst_data_cur = (char *)  dst_sorted.ptr;
+
+    // [TAG_MOE_F16GATHER] with f16-gathered src1 the generic ggml_cuda_mul_mat wrapper cannot be
+    // used (its op_mul_mat harness assumes f32 src1 data) — run the per-expert GEMM directly:
+    // dequant the expert's Q8_0 weights to f16 (same dequant the cuBLAS op does) and issue the
+    // same f16 x f16 -> f32 GemmEx with COMPUTE_32F, on the same handle/stream. Same kernels,
+    // same accumulation -> byte-identical to the f32-gather path.
+    const bool moe_f16_direct = type_src1_sorted == GGML_TYPE_F16 && ggml_is_quantized(src0->type);
+    ggml_cuda_pool_alloc<half> w_f16_pool(ctx.pool());
+    to_fp16_cuda_t to_fp16_w = nullptr;
+    if (moe_f16_direct) {
+        w_f16_pool.alloc(ne00*ne01);
+        to_fp16_w = ggml_get_to_fp16_cuda(src0->type);
+        GGML_ASSERT(to_fp16_w != nullptr);
+        CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(), stream));
+    }
+
     for (int64_t i02 = 0; i02 < ne02; ++i02) {
         if (tokens_per_expert[i02] == 0) {
+            continue;
+        }
+
+        if (moe_f16_direct) {
+            const int m = (int) tokens_per_expert[i02];
+            to_fp16_w((const char *) src0->data + i02*nb02, w_f16_pool.ptr, ne00*ne01, stream);
+            CUDA_CHECK(cudaGetLastError());
+            const float alpha = 1.0f, beta = 0.0f;
+            CUBLAS_CHECK(cublasGemmEx(ctx.cublas_handle(), CUBLAS_OP_T, CUBLAS_OP_N,
+                    (int) ne0, m, (int) ne00,
+                    &alpha, w_f16_pool.ptr, CUDA_R_16F, (int) ne00,
+                            src1_data_cur,  CUDA_R_16F, (int) ne10,
+                    &beta,  dst_data_cur,   CUDA_R_32F, (int) ne0,
+                    CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            src1_data_cur += (int64_t) m * ne10 * ts_src1_sorted;
+            dst_data_cur  += (int64_t) m * ne0  * ts_dst_sorted;
             continue;
         }
 
@@ -2782,11 +3219,23 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         src1_data_cur += src1_slice.nb[2];
         dst_data_cur  +=  dst_slice.nb[2];
     }
+    }
+
+    // [TAG_MOE_EP] zero the shared ZERO_ROW (dst_sorted row n_local) that non-local (token,slot)
+    // pairs scatter from, so this device's output has 0 for experts it does not own; the meta
+    // backend's PARTIAL all-reduce then sums the per-shard outputs into the full MoE result.
+    if (moe_ep) {
+        CUDA_CHECK(cudaMemsetAsync((char *) dst_sorted.ptr + n_local*ne0*ts_dst_sorted, 0, ne0*ts_dst_sorted, stream));
+    }
+
+    if (moe_dbg) { moe_dbg_stats("GEMMOUT", dst_sorted.ptr, type_dst_sorted, n_local*ne0); }
 
     get_rows_cuda(dst_sorted.ptr, type_dst_sorted, ids_from_sorted, dst->data, dst->type,
         ne0, ne0*ts_dst_sorted, ne_get_rows*ne0*ts_dst_sorted, ne_get_rows*ne0*ts_dst_sorted,
         ne_get_rows, 1, 1, sizeof(int32_t), ne_get_rows*sizeof(int32_t), ne_get_rows*sizeof(int32_t),
         nb1, nb2, nb3, stream);
+
+    if (moe_dbg) { moe_dbg_stats("SCATTER", dst->data, dst->type, ggml_nelements(dst)); }
 }
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
@@ -4570,6 +5019,8 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     ggml_cuda_set_device(cuda_ctx->device);
 
+    ggml_cuda_mmvq_q8_1_cache_next_gen();
+
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
     const void * graph_key = nullptr;
@@ -5723,6 +6174,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_comm_allreduce_tensor") == 0) {
         return (void *)ggml_backend_cuda_comm_allreduce_tensor;
+    }
+    if (strcmp(name, "ggml_backend_comm_allreduce_tensor_single") == 0) {
+        return (void *)ggml_backend_cuda_comm_allreduce_tensor_single;
     }
     if (strcmp(name, "ggml_backend_split_buffer_type") == 0) {
         return (void *)ggml_backend_cuda_split_buffer_type;
