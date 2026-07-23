@@ -11,6 +11,8 @@
 
 #include "moe-gemm.cuh"
 
+#include "affinity-wave.cuh"
+
 #define MOE_GEMM_KSTAGE 32
 
 union moe_gemm_smem {
@@ -212,11 +214,14 @@ __global__ static void moe_plan_build(
         const char * __restrict__ ids, int64_t ne12, int64_t neu,
         size_t ids_nb0, size_t ids_nb1, int n_experts, int expert_base,
         int32_t * __restrict__ counts, int32_t * __restrict__ cursors,
-        int32_t * __restrict__ tiles, int tile_cap,
+        int32_t * __restrict__ tiles64, int32_t * __restrict__ tiles32,
+        int32_t * __restrict__ tiles16, int tile_cap, bool t64_layout,
         int32_t * __restrict__ scalars) {  // scalars: [0]=n_local [1]=n_tiles
     __shared__ int hist[MOE_PLAN_MAX_EXPERTS];
     __shared__ int row0[MOE_PLAN_MAX_EXPERTS];
-    __shared__ int tbase[MOE_PLAN_MAX_EXPERTS];
+    __shared__ int tbase64[MOE_PLAN_MAX_EXPERTS];
+    __shared__ int tbase32[MOE_PLAN_MAX_EXPERTS];
+    __shared__ int tbase16[MOE_PLAN_MAX_EXPERTS];
     const int tid = threadIdx.x;
     for (int e = tid; e < n_experts; e += blockDim.x) { hist[e] = 0; }
     __syncthreads();
@@ -231,26 +236,71 @@ __global__ static void moe_plan_build(
     }
     __syncthreads();
     if (tid == 0) {
-        int rrun = 0, trun = 0;
+        int rrun = 0, trun64 = 0, trun32 = 0, trun16 = 0;
         for (int e = 0; e < n_experts; ++e) {
-            row0[e]  = rrun;
-            tbase[e] = trun;
+            row0[e] = rrun;
+            tbase64[e] = trun64;
+            tbase32[e] = trun32;
+            tbase16[e] = trun16;
             rrun += hist[e];
-            trun += (hist[e] + 31) / 32;
+            if (!t64_layout) {
+                trun64 += (hist[e] + 31)/32;
+                continue;
+            }
+            int remaining = hist[e];
+            while (remaining >= 48) {
+                ++trun64;
+                remaining -= min(64, remaining);
+            }
+            if (remaining > 16) {
+                ++trun32;
+                remaining -= min(32, remaining);
+            }
+            if (remaining != 0) {
+                ++trun16;
+            }
         }
         scalars[0] = rrun;
-        scalars[1] = trun;
+        scalars[1] = trun64;
+        scalars[2] = trun32;
+        scalars[3] = trun16;
     }
     __syncthreads();
     for (int e = tid; e < n_experts; e += blockDim.x) {
         counts[e]  = hist[e];
         cursors[e] = row0[e];
-        const int nt = (hist[e] + 31) / 32;
-        for (int t = 0; t < nt; ++t) {
-            const int idx = tbase[e] + t;
-            tiles[idx]                = e;
-            tiles[tile_cap + idx]     = row0[e] + t*32;
-            tiles[2*tile_cap + idx]   = hist[e] - t*32 < 32 ? hist[e] - t*32 : 32;
+        if (!t64_layout) {
+            const int nt = (hist[e] + 31)/32;
+            for (int t = 0; t < nt; ++t) {
+                const int idx = tbase64[e] + t;
+                tiles64[idx]              = e;
+                tiles64[tile_cap + idx]   = row0[e] + t*32;
+                tiles64[2*tile_cap + idx] = min(32, hist[e] - t*32);
+            }
+            continue;
+        }
+        int row = 0;
+        int i64 = tbase64[e], i32 = tbase32[e], i16 = tbase16[e];
+        while (hist[e] - row >= 48) {
+            const int rows = min(64, hist[e] - row);
+            tiles64[i64]              = e;
+            tiles64[tile_cap + i64]   = row0[e] + row;
+            tiles64[2*tile_cap + i64] = rows;
+            ++i64;
+            row += rows;
+        }
+        if (hist[e] - row > 16) {
+            const int rows = min(32, hist[e] - row);
+            tiles32[i32]              = e;
+            tiles32[tile_cap + i32]   = row0[e] + row;
+            tiles32[2*tile_cap + i32] = rows;
+            ++i32;
+            row += rows;
+        }
+        if (row < hist[e]) {
+            tiles16[i16]              = e;
+            tiles16[tile_cap + i16]   = row0[e] + row;
+            tiles16[2*tile_cap + i16] = hist[e] - row;
         }
     }
 }
@@ -286,18 +336,19 @@ __global__ static void moe_plan_scatter(
 // grid-strides over m_tile x n_tile work read from the DEVICE plan, and
 // (b) A is gathered in-kernel from the ORIGINAL f32 src1 through to_sorted
 // (A3) - no f16 gather pass, activations enter the FFMA path unrounded.
+template<bool T64_LAYOUT>
 __global__ __launch_bounds__(128, 2)
 static void moe_gemm_q8_plan(const float * __restrict__ A, size_t a_stride,
                              const char * __restrict__ W, float * __restrict__ C,
                              const int32_t * __restrict__ to_sorted,
                              const int32_t * __restrict__ tiles, int tile_cap,
-                             const int32_t * __restrict__ scalars,
+                             const int32_t * __restrict__ scalars, int tile_count_index,
                              const float * __restrict__ rw,
                              size_t nb01, size_t nb02, int n, int k) {
     __shared__ moe_gemm_smem sm;
 
     const int n_ntiles = n / 64;
-    const int n_work   = scalars[1] * n_ntiles;
+    const int n_work   = scalars[tile_count_index] * n_ntiles;
 
     const int tid  = threadIdx.x;
     const int kgrp = tid >> 5;
@@ -338,10 +389,22 @@ static void moe_gemm_q8_plan(const float * __restrict__ A, size_t a_stride,
         const char * gQ1 = bq + (size_t) (col0 + b_r1) * nb01;
 
         auto fetchb = [&](int s) {
-            const char * p0 = gQ0 + (size_t) s * sizeof(block_q8_0);
-            const char * p1 = gQ1 + (size_t) s * sizeof(block_q8_0);
-            pd0 = __half2float(*(const half *) p0);
-            pd1 = __half2float(*(const half *) p1);
+            const char * p0;
+            const char * p1;
+            if constexpr (T64_LAYOUT) {
+                const int n_kblocks = k/MOE_GEMM_KSTAGE;
+                const char * tile_stage = bq +
+                        ((size_t) (col0/64)*n_kblocks + s)*(64*2 + 64*MOE_GEMM_KSTAGE);
+                p0 = tile_stage + 64*2 + b_r0*MOE_GEMM_KSTAGE - 2;
+                p1 = tile_stage + 64*2 + b_r1*MOE_GEMM_KSTAGE - 2;
+                pd0 = __half2float(*(const half *) (tile_stage + b_r0*2));
+                pd1 = __half2float(*(const half *) (tile_stage + b_r1*2));
+            } else {
+                p0 = gQ0 + (size_t) s * sizeof(block_q8_0);
+                p1 = gQ1 + (size_t) s * sizeof(block_q8_0);
+                pd0 = __half2float(*(const half *) p0);
+                pd1 = __half2float(*(const half *) p1);
+            }
             #pragma unroll
             for (int t = 0; t < 4; ++t) {
                 pq0[t] = *(const unsigned short *) (p0 + 2 + b_k + 2 * t);
@@ -430,23 +493,296 @@ static void moe_gemm_q8_plan(const float * __restrict__ A, size_t a_stride,
     }
 }
 
+union moe_gemm_m64_smem {
+    struct {
+        float A[2][MOE_GEMM_KSTAGE][64];
+        float B[2][MOE_GEMM_KSTAGE][64];
+    } stage;
+    float red[64][64];
+};
+
+// [TAG_AFFINITY_WAVE] T64 bulk path. The device planner already emits
+// expert-contiguous M32 tiles, so adjacent pairs form one M64 split-K2 tile
+// without another planner kernel or host-visible count.
+__global__ __launch_bounds__(256, 2)
+static void moe_gemm_q8_plan_m64_t64(
+        const float * __restrict__ A, size_t a_stride,
+        const char * __restrict__ W, float * __restrict__ C,
+        const int32_t * __restrict__ to_sorted,
+        const int32_t * __restrict__ tiles, int tile_cap,
+        const int32_t * __restrict__ scalars,
+        const float * __restrict__ rw,
+        size_t nb02, int n, int k) {
+    __shared__ moe_gemm_m64_smem sm;
+
+    const int n_ntiles = n/64;
+    const int n_work = scalars[1]*n_ntiles;
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int kgrp = warp >> 2;
+    const int wm = warp & 3;
+    const int rm = lane >> 3;
+    const int nt = lane & 7;
+    const int a_r = tid >> 2;
+    const int a_k = (tid & 3)*8;
+    const int b_r = tid >> 2;
+    const int b_k = (tid & 3)*8;
+
+    for (int work = blockIdx.x; work < n_work; work += gridDim.x) {
+        const int mt_id = work/n_ntiles;
+        const int col0 = (work % n_ntiles)*64;
+        const int texp = tiles[mt_id];
+        const int row0 = tiles[tile_cap + mt_id];
+        const int rows = tiles[2*tile_cap + mt_id];
+        const int local_row = a_r < rows ? a_r : rows - 1;
+        const int arow = to_sorted[row0 + local_row];
+        const char * bq = W + (size_t) texp*nb02;
+
+        float4 pa0, pa1;
+        unsigned short pq[4];
+        float pd;
+        auto fetcha = [&](int stage) {
+            const float4 * input4 = (const float4 *)
+                    (A + (size_t) arow*a_stride + stage*MOE_GEMM_KSTAGE + a_k);
+            pa0 = input4[0];
+            pa1 = input4[1];
+        };
+        auto fetchb = [&](int stage) {
+            const int n_kblocks = k/MOE_GEMM_KSTAGE;
+            const char * tile_stage = bq +
+                    ((size_t) (col0/64)*n_kblocks + stage)*(64*2 + 64*MOE_GEMM_KSTAGE);
+            pd = __half2float(*(const half *) (tile_stage + b_r*2));
+            const char * input = tile_stage + 64*2 + b_r*MOE_GEMM_KSTAGE;
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                pq[i] = *(const unsigned short *) (input + b_k + 2*i);
+            }
+        };
+        auto stage_data = [&](int buffer) {
+            const float * a0 = (const float *) &pa0;
+            const float * a1 = (const float *) &pa1;
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                sm.stage.A[buffer][a_k + i][a_r] = a0[i];
+                sm.stage.A[buffer][a_k + i + 4][a_r] = a1[i];
+                sm.stage.B[buffer][b_k + 2*i][b_r] = (float) (signed char) (pq[i] & 0xff)*pd;
+                sm.stage.B[buffer][b_k + 2*i + 1][b_r] = (float) (signed char) (pq[i] >> 8)*pd;
+            }
+        };
+
+        float acc[4][8] = {};
+        fetcha(0);
+        fetchb(0);
+        stage_data(0);
+        __syncthreads();
+        int buffer = 0;
+        for (int kb = 0; kb < k; kb += MOE_GEMM_KSTAGE) {
+            const bool last = kb + MOE_GEMM_KSTAGE >= k;
+            if (!last) {
+                const int next = (kb + MOE_GEMM_KSTAGE)/MOE_GEMM_KSTAGE;
+                fetcha(next);
+                fetchb(next);
+            }
+            #pragma unroll
+            for (int kk = 0; kk < MOE_GEMM_KSTAGE/2; ++kk) {
+                const int ks = kgrp*(MOE_GEMM_KSTAGE/2) + kk;
+                const int row = wm*16 + rm*4;
+                const float4 av = *(const float4 *) &sm.stage.A[buffer][ks][row];
+                const float4 bv0 = *(const float4 *) &sm.stage.B[buffer][ks][nt*8];
+                const float4 bv1 = *(const float4 *) &sm.stage.B[buffer][ks][nt*8 + 4];
+                const float aa[4] = { av.x, av.y, av.z, av.w };
+                const float bb[8] = { bv0.x, bv0.y, bv0.z, bv0.w, bv1.x, bv1.y, bv1.z, bv1.w };
+                #pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    #pragma unroll
+                    for (int j = 0; j < 8; ++j) {
+                        acc[i][j] += aa[i]*bb[j];
+                    }
+                }
+            }
+            if (!last) {
+                stage_data(buffer ^ 1);
+            }
+            __syncthreads();
+            buffer ^= 1;
+        }
+
+        const int output_row0 = wm*16 + rm*4;
+        if (kgrp == 1) {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                #pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    sm.red[output_row0 + i][nt*8 + j] = acc[i][j];
+                }
+            }
+        }
+        __syncthreads();
+        if (kgrp == 0) {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const int row = output_row0 + i;
+                if (row < rows) {
+                    const float weight = rw != nullptr ? rw[to_sorted[row0 + row]] : 1.0f;
+                    #pragma unroll
+                    for (int j = 0; j < 8; ++j) {
+                        float value = acc[i][j] + sm.red[row][nt*8 + j];
+                        if (rw != nullptr) {
+                            value *= weight;
+                        }
+                        C[(size_t) (row0 + row)*n + col0 + nt*8 + j] = value;
+                    }
+                }
+            }
+        }
+        __syncthreads();
+    }
+}
+
+union moe_gemm_m16_pair_smem {
+    struct {
+        float A[2][MOE_GEMM_KSTAGE][16];
+        float B[2][MOE_GEMM_KSTAGE][64];
+    } stage;
+    float red[2][16][64];
+};
+
+__global__ __launch_bounds__(128, 3)
+static void moe_gemm_q8_plan_m16_pair_t64(
+        const float * __restrict__ A, size_t a_stride,
+        const char * __restrict__ W, float * __restrict__ C,
+        const int32_t * __restrict__ to_sorted,
+        const int32_t * __restrict__ tiles, int tile_cap,
+        const int32_t * __restrict__ scalars,
+        const float * __restrict__ rw,
+        size_t nb02, int n, int k) {
+    __shared__ moe_gemm_m16_pair_smem sm;
+
+    const int group = threadIdx.x >> 6;
+    const int local_tid = threadIdx.x & 63;
+    const int kgrp = local_tid >> 5;
+    const int lane = local_tid & 31;
+    const int rm = lane >> 3;
+    const int nt = lane & 7;
+    const int a_r = local_tid >> 2;
+    const int a_k = (local_tid & 3)*8;
+    const int b_r = local_tid;
+
+    const int n_ntiles = n/64;
+    const int n_mtiles = scalars[3];
+    const int n_pairs = (n_mtiles + 1)/2;
+    const int n_work = n_pairs*n_ntiles;
+    for (int work = blockIdx.x; work < n_work; work += gridDim.x) {
+        const int pair = work/n_ntiles;
+        const int col0 = (work % n_ntiles)*64;
+        const int tile_index = pair*2 + group;
+        const bool active = tile_index < n_mtiles;
+        const int safe_index = active ? tile_index : 0;
+        const int texp = tiles[safe_index];
+        const int row0 = tiles[tile_cap + safe_index];
+        const int rows = tiles[2*tile_cap + safe_index];
+        const int local_row = a_r < rows ? a_r : rows - 1;
+        const int arow = to_sorted[row0 + local_row];
+        const char * bq = W + (size_t) texp*nb02;
+
+        float acc[4][8] = {};
+        for (int stage = 0; stage < k/MOE_GEMM_KSTAGE; ++stage) {
+            const float4 * input4 = (const float4 *)
+                    (A + (size_t) arow*a_stride + stage*MOE_GEMM_KSTAGE + a_k);
+            const float4 pa0 = input4[0];
+            const float4 pa1 = input4[1];
+
+            const int n_kblocks = k/MOE_GEMM_KSTAGE;
+            const char * tile_stage = bq +
+                    ((size_t) (col0/64)*n_kblocks + stage)*(64*2 + 64*MOE_GEMM_KSTAGE);
+            const float scale = __half2float(*(const half *) (tile_stage + b_r*2));
+            const char * values = tile_stage + 64*2 + b_r*MOE_GEMM_KSTAGE;
+
+            const float * af0 = (const float *) &pa0;
+            const float * af1 = (const float *) &pa1;
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                sm.stage.A[group][a_k + i][a_r] = af0[i];
+                sm.stage.A[group][a_k + i + 4][a_r] = af1[i];
+            }
+            #pragma unroll
+            for (int i = 0; i < MOE_GEMM_KSTAGE/2; ++i) {
+                const unsigned short q = *(const unsigned short *) (values + 2*i);
+                sm.stage.B[group][2*i][b_r] = (float) (signed char) (q & 0xff)*scale;
+                sm.stage.B[group][2*i + 1][b_r] = (float) (signed char) (q >> 8)*scale;
+            }
+            __syncthreads();
+
+            #pragma unroll
+            for (int kk = 0; kk < MOE_GEMM_KSTAGE/2; ++kk) {
+                const int ks = kgrp*(MOE_GEMM_KSTAGE/2) + kk;
+                const float4 av = *(const float4 *) &sm.stage.A[group][ks][rm*4];
+                const float4 bv0 = *(const float4 *) &sm.stage.B[group][ks][nt*8];
+                const float4 bv1 = *(const float4 *) &sm.stage.B[group][ks][nt*8 + 4];
+                const float aa[4] = { av.x, av.y, av.z, av.w };
+                const float bb[8] = { bv0.x, bv0.y, bv0.z, bv0.w, bv1.x, bv1.y, bv1.z, bv1.w };
+                #pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    #pragma unroll
+                    for (int j = 0; j < 8; ++j) {
+                        acc[i][j] += aa[i]*bb[j];
+                    }
+                }
+            }
+            __syncthreads();
+        }
+
+        if (kgrp == 1) {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                #pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    sm.red[group][rm*4 + i][nt*8 + j] = acc[i][j];
+                }
+            }
+        }
+        __syncthreads();
+        if (active && kgrp == 0) {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const int row = rm*4 + i;
+                if (row < rows) {
+                    const float weight = rw != nullptr ? rw[to_sorted[row0 + row]] : 1.0f;
+                    #pragma unroll
+                    for (int j = 0; j < 8; ++j) {
+                        float value = acc[i][j] + sm.red[group][row][nt*8 + j];
+                        if (rw != nullptr) {
+                            value *= weight;
+                        }
+                        C[(size_t) (row0 + row)*n + col0 + nt*8 + j] = value;
+                    }
+                }
+            }
+        }
+        __syncthreads();
+    }
+}
+
 // [TAG_MOE_PLAN] persistent per-(device,stream-slot) plan workspace. Stable
 // cudaMalloc addresses that survive graph capture/replay (pool allocations
 // give no such guarantee - the Q8_1_DEDUP stale-cache lesson). The build/
 // scatter kernels re-fill it every call; this struct only owns memory.
 struct moe_plan_ws {
-    int32_t * buf = nullptr;   // [counts E | cursors E | scalars 2 | tiles 3*tile_cap | to_sorted A | from_sorted A]
+    int32_t * buf = nullptr;
     size_t    a_cap = 0;       // assignment capacity
     size_t    e_cap = 0;       // expert capacity
     int       device = -1;
     int32_t * counts()      { return buf; }
     int32_t * cursors()     { return buf + e_cap; }
     int32_t * scalars()     { return buf + 2*e_cap; }
-    int32_t * tiles()       { return buf + 2*e_cap + 2; }
+    int32_t * tiles64()     { return buf + 2*e_cap + 4; }
+    int32_t * tiles32()     { return tiles64() + 3*tile_cap(); }
+    int32_t * tiles16()     { return tiles32() + 3*tile_cap(); }
     size_t    tile_cap()    { return a_cap/32 + e_cap + 1; }
-    int32_t * to_sorted()   { return tiles() + 3*tile_cap(); }
+    int32_t * to_sorted()   { return tiles16() + 3*tile_cap(); }
     int32_t * from_sorted() { return to_sorted() + a_cap; }
-    size_t    total()       { return 2*e_cap + 2 + 3*tile_cap() + 2*a_cap; }
+    size_t    total()       { return 2*e_cap + 4 + 9*tile_cap() + 2*a_cap; }
 };
 
 // shared eligibility: env + shape/stride constraints. Used by the runtime
@@ -526,11 +862,13 @@ static bool moe_plan_exec(
     }
     const int tile_cap = (int) ws.tile_cap();
     const int zero_row = (int) n_assign;   // CAPACITY slot, shape-static
+    const bool t64_layout = ggml_cuda_affinity_wave_is_t64(src0_data);
 
     // plan build + scatter (device-only, no syncs)
     moe_plan_build<<<1, 256, 0, stream>>>((const char *) ids->data, ne12, neu,
         ids->nb[0], ids->nb[1], (int) n_experts, expert_base,
-        ws.counts(), ws.cursors(), ws.tiles(), tile_cap, ws.scalars());
+        ws.counts(), ws.cursors(), ws.tiles64(), ws.tiles32(), ws.tiles16(),
+        tile_cap, t64_layout, ws.scalars());
     const int scatter_blocks = (int) std::min<int64_t>((n_assign + 255) / 256, 256);
     moe_plan_scatter<<<scatter_blocks, 256, 0, stream>>>((const char *) ids->data, ne12, neu, ne11,
         ids->nb[0], ids->nb[1], (int) n_experts, expert_base, zero_row,
@@ -549,8 +887,8 @@ static bool moe_plan_exec(
             std::vector<char> hids(ggml_nbytes(ids));
             CUDA_CHECK(cudaMemcpy(hids.data(), ids->data, hids.size(), cudaMemcpyDeviceToHost));
             const int32_t * counts = h.data(), * scal = h.data() + 2*ws.e_cap;
-            const int32_t * tls = scal + 2;
-            const int32_t * tos = tls + 3*tile_cap, * frs = tos + ws.a_cap;
+            const int32_t * tls = scal + 4;
+            const int32_t * tos = tls + 9*tile_cap, * frs = tos + ws.a_cap;
             std::vector<int32_t> ref_cnt(n_experts, 0);
             for (int64_t i = 0; i < n_assign; ++i) {
                 const int32_t e = *(const int32_t *)(hids.data() + (i/neu)*ids->nb[1] + (i%neu)*ids->nb[0]);
@@ -567,13 +905,16 @@ static bool moe_plan_exec(
             for (int64_t e = 0; e < n_experts && bad < 5; ++e) {
                 if (counts[e] != ref_cnt[e]) { fprintf(stderr, "[moe-plan] BAD count e=%lld %d!=%d\n", (long long) e, counts[e], ref_cnt[e]); ++bad; }
             }
-            if (scal[0] != ref_local || scal[1] != ref_tiles) { fprintf(stderr, "[moe-plan] BAD scalars %d/%d != %d/%d\n", scal[0], scal[1], ref_local, ref_tiles); ++bad; }
-            int t = 0;
-            for (int64_t e = 0; e < n_experts && bad < 5; ++e) {
-                for (int o = 0; o < ref_cnt[e]; o += 32, ++t) {
-                    if (tls[t] != e || tls[tile_cap + t] != ref_row0[e] + o ||
-                        tls[2*tile_cap + t] != std::min<int32_t>(32, ref_cnt[e] - o)) {
-                        fprintf(stderr, "[moe-plan] BAD tile %d\n", t); ++bad; break;
+            if (scal[0] != ref_local) { fprintf(stderr, "[moe-plan] BAD local rows %d != %d\n", scal[0], ref_local); ++bad; }
+            if (!t64_layout) {
+                if (scal[1] != ref_tiles) { fprintf(stderr, "[moe-plan] BAD tiles %d != %d\n", scal[1], ref_tiles); ++bad; }
+                int t = 0;
+                for (int64_t e = 0; e < n_experts && bad < 5; ++e) {
+                    for (int o = 0; o < ref_cnt[e]; o += 32, ++t) {
+                        if (tls[t] != e || tls[tile_cap + t] != ref_row0[e] + o ||
+                            tls[2*tile_cap + t] != std::min<int32_t>(32, ref_cnt[e] - o)) {
+                            fprintf(stderr, "[moe-plan] BAD tile %d\n", t); ++bad; break;
+                        }
                     }
                 }
             }
@@ -602,9 +943,36 @@ static bool moe_plan_exec(
 
     // persistent fixed-grid grouped GEMM, in-kernel f32 gather (A3)
     const int nsm = ggml_cuda_info().devices[dev].nsm;
-    moe_gemm_q8_plan<<<nsm * 2, 128, 0, stream>>>((const float *) src1->data, a_stride,
-        src0_data, dst_sorted.ptr, ws.to_sorted(), ws.tiles(), tile_cap, ws.scalars(), rw,
-        src0->nb[1], src0->nb[2], (int) ne0, (int) ne00);
+    static thread_local bool probed_t64[GGML_CUDA_MAX_DEVICES] = {};
+    if (!probed_t64[dev]) {
+        fprintf(stderr, "AffinityWave: GPU%d device-plan weight %p T64=%d\n",
+                dev, (const void *) src0_data, t64_layout ? 1 : 0);
+        probed_t64[dev] = true;
+    }
+    if (t64_layout) {
+        static thread_local bool logged_t64[GGML_CUDA_MAX_DEVICES] = {};
+        if (!logged_t64[dev]) {
+            fprintf(stderr, "AffinityWave: GPU%d M64 split-K2 device-plan path engaged\n", dev);
+            logged_t64[dev] = true;
+        }
+        moe_gemm_q8_plan_m64_t64<<<nsm * 2, 256, 0, stream>>>(
+            (const float *) src1->data, a_stride, src0_data, dst_sorted.ptr,
+            ws.to_sorted(), ws.tiles64(), tile_cap, ws.scalars(), rw,
+            src0->nb[2], (int) ne0, (int) ne00);
+        moe_gemm_q8_plan<true><<<nsm * 2, 128, 0, stream>>>(
+            (const float *) src1->data, a_stride, src0_data, dst_sorted.ptr,
+            ws.to_sorted(), ws.tiles32(), tile_cap, ws.scalars(), 2, rw,
+            src0->nb[1], src0->nb[2], (int) ne0, (int) ne00);
+        moe_gemm_q8_plan_m16_pair_t64<<<nsm * 2, 128, 0, stream>>>(
+            (const float *) src1->data, a_stride, src0_data, dst_sorted.ptr,
+            ws.to_sorted(), ws.tiles16(), tile_cap, ws.scalars(), rw,
+            src0->nb[2], (int) ne0, (int) ne00);
+    } else {
+        moe_gemm_q8_plan<false><<<nsm * 2, 128, 0, stream>>>(
+            (const float *) src1->data, a_stride, src0_data, dst_sorted.ptr,
+            ws.to_sorted(), ws.tiles64(), tile_cap, ws.scalars(), 1, rw,
+            src0->nb[1], src0->nb[2], (int) ne0, (int) ne00);
+    }
     CUDA_CHECK(cudaGetLastError());
 
     // capacity-sized inverse scatter (unchanged machinery; launch is shape-static)

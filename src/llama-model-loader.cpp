@@ -1539,6 +1539,15 @@ bool llama_model_loader::load_all_data(
         }
 
         size_t n_size = ggml_nbytes(cur);
+        if (getenv("GGML_CUDA_AFFINITY_WAVE") != nullptr && cur->ne[2] > 1) {
+            static int aw_load_probes_all = 0;
+            if (aw_load_probes_all++ < 12) {
+                LLAMA_LOG_WARN("AffinityWave: loader tensor %s type=%s ne=%lld,%lld,%lld buffer=%s mmap=%d\n",
+                        cur->name, ggml_type_name(cur->type),
+                        (long long) cur->ne[0], (long long) cur->ne[1], (long long) cur->ne[2],
+                        ggml_backend_buffer_name(cur->buffer), use_mmap ? 1 : 0);
+            }
+        }
 
         if (use_mmap) {
             const auto & mapping = mappings.at(weight->idx);
@@ -1566,6 +1575,15 @@ bool llama_model_loader::load_all_data(
                 mmap_used.first  = std::min(mmap_used.first,  weight->offs);
                 mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
             } else {
+                if (getenv("GGML_CUDA_AFFINITY_WAVE") != nullptr && cur->ne[2] > 1) {
+                    static int aw_load_probes = 0;
+                    if (aw_load_probes++ < 12) {
+                        LLAMA_LOG_WARN("AffinityWave: loader probe %s type=%s ne=%lld,%lld,%lld buffer=%s\n",
+                                cur->name, ggml_type_name(cur->type),
+                                (long long) cur->ne[0], (long long) cur->ne[1], (long long) cur->ne[2],
+                                ggml_backend_buffer_name(cur->buffer));
+                    }
+                }
                 ggml_backend_tensor_set(cur, data, 0, n_size);
             }
         } else {

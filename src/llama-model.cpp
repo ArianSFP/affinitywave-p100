@@ -422,6 +422,23 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     };
 
     auto get_tensor_config = [&]() -> tensor_config {
+        // AffinityWave keeps expert ownership sharded while making each token lane's
+        // non-expert layer self-contained on one device.
+        static const bool aw_wave_dense = getenv("GGML_CUDA_AW_WAVE_DENSE") != nullptr &&
+                strcmp(getenv("GGML_CUDA_AW_WAVE_DENSE"), "0") != 0;
+        if (aw_wave_dense) {
+            if (std::regex_match(tensor_name, pattern_ffn_exps_weight)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_2);
+            }
+            if (std::regex_match(tensor_name, pattern_output_weight)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1);
+            }
+            if (std::regex_match(tensor_name, pattern_output_bias)) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_0);
+            }
+            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+        }
+
         // standard attention
         if (std::regex_match(tensor_name, pattern_q_weight) || std::regex_match(tensor_name, pattern_kv_weight)) {
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight", "ssm_out.weight");

@@ -1,4 +1,6 @@
 #include "mmvq.cuh"
+
+#include "affinity-wave.cuh"
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
@@ -26,6 +28,7 @@ struct ggml_cuda_mmvq_q8_1_rolling_cache {
 static thread_local std::array<ggml_cuda_mmvq_q8_1_rolling_cache, GGML_CUDA_MAX_DEVICES> ggml_cuda_mmvq_q8_1_cache;
 
 static thread_local uint64_t ggml_cuda_mmvq_q8_1_gen = 0;
+static thread_local bool ggml_cuda_mmvq_t64_layout = false;
 
 void ggml_cuda_mmvq_q8_1_cache_next_gen() {
     ggml_cuda_mmvq_q8_1_gen++;
@@ -561,6 +564,31 @@ static constexpr __host__ __device__ int calc_rows_per_block(
     return 1;
 }
 
+static __device__ __forceinline__ float vec_dot_q8_0_q8_1_t64(
+        const void * vx, const block_q8_1 * y, uint32_t channel, uint32_t row,
+        int kblock, int iqs, uint32_t ncols_x, uint32_t nrows_x) {
+    constexpr int t64_rows = 64;
+    constexpr int kstage = 32;
+    constexpr int t64_stage_bytes = t64_rows*2 + t64_rows*kstage;
+    constexpr int vdr = VDR_Q8_0_Q8_1_MMVQ;
+    const int n_kblocks = ncols_x/kstage;
+    const size_t matrix_bytes = (size_t) nrows_x*n_kblocks*sizeof(block_q8_0);
+    const char * matrix = (const char *) vx + (size_t) channel*matrix_bytes;
+    const char * tile_stage = matrix +
+            ((size_t) (row/t64_rows)*n_kblocks + kblock)*t64_stage_bytes;
+    const int8_t * qs = (const int8_t *) (tile_stage + t64_rows*2 + (row % t64_rows)*kstage);
+
+    int v[vdr];
+    int u[vdr];
+    #pragma unroll
+    for (int i = 0; i < vdr; ++i) {
+        v[i] = get_int_b2(qs, iqs + i);
+        u[i] = get_int_b4(y->qs, iqs + i);
+    }
+    const half d = *(const half *) (tile_stage + (row % t64_rows)*2);
+    return vec_dot_q8_0_q8_1_impl<float, vdr>(v, u, d, __low2half(y->ds));
+}
+
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id())*ggml_cuda_get_physical_warp_size(), 1)
 static __global__ void mul_mat_vec_q(
@@ -569,7 +597,8 @@ static __global__ void mul_mat_vec_q(
         const uint32_t stride_col_dst, const uint3 channel_ratio, const uint32_t stride_channel_x,
         const uint32_t stride_channel_y, const uint32_t stride_channel_dst, const uint3 sample_ratio,
         const uint32_t stride_sample_x, const uint32_t stride_sample_y, const uint32_t stride_sample_dst,
-        const uint32_t ids_stride, const uint32_t nchannels_x, const uint32_t ep_base_enc) {
+        const uint32_t ids_stride, const uint32_t nchannels_x, const uint32_t ep_base_enc,
+        const bool t64_layout) {
     const void    * GGML_CUDA_RESTRICT vx  = vx_ptr;
     const void    * GGML_CUDA_RESTRICT vy  = vy_ptr;
     const int32_t * GGML_CUDA_RESTRICT ids = ids_ptr;
@@ -692,12 +721,35 @@ static __global__ void mul_mat_vec_q(
         for (int j = 0; j < ncols_dst; ++j) {
 #pragma unroll
             for (int i = 0; i < rows_per_cuda_block; ++i) {
-                tmp[j][i] += vec_dot_q_cuda(
-                    vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                if constexpr (type == GGML_TYPE_Q8_0) {
+                    if (t64_layout) {
+                        tmp[j][i] += vec_dot_q8_0_q8_1_t64(vx, &y[j*stride_col_y + kby], channel_x,
+                                row0 + i, kbx, kqs, ncols_x, stride_channel_x/stride_row_x);
+                    } else {
+                        tmp[j][i] += vec_dot_q_cuda(
+                                vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                    }
+                } else {
+                    tmp[j][i] += vec_dot_q_cuda(
+                            vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                }
                 if constexpr (has_fusion) {
                     if (use_gate) {
-                        tmp_gate[j][i] += vec_dot_q_cuda(
-                            vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        if constexpr (type == GGML_TYPE_Q8_0) {
+                            if (t64_layout) {
+                                tmp_gate[j][i] += vec_dot_q8_0_q8_1_t64(vgate,
+                                        &y[j*stride_col_y + kby], channel_x, row0 + i, kbx, kqs,
+                                        ncols_x, stride_channel_x/stride_row_x);
+                            } else {
+                                tmp_gate[j][i] += vec_dot_q_cuda(
+                                        vgate, &y[j*stride_col_y + kby],
+                                        kbx_offset + i*stride_row_x + kbx, kqs);
+                            }
+                        } else {
+                            tmp_gate[j][i] += vec_dot_q_cuda(
+                                    vgate, &y[j*stride_col_y + kby],
+                                    kbx_offset + i*stride_row_x + kbx, kqs);
+                        }
                     }
                 }
             }
@@ -803,7 +855,8 @@ static __global__ void mul_mat_vec_q_moe(
         const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t nrows_x,
         const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
         const uint32_t stride_channel_x, const uint32_t stride_channel_y, const uint32_t stride_channel_dst,
-        const uint32_t ncols_dst, const uint32_t ids_stride, const uint32_t nchannels_x, const uint32_t ep_base_enc) {
+        const uint32_t ncols_dst, const uint32_t ids_stride, const uint32_t nchannels_x,
+        const uint32_t ep_base_enc, const bool t64_layout) {
     const void    * GGML_CUDA_RESTRICT vx  = vx_ptr;
     const void    * GGML_CUDA_RESTRICT vy  = vy_ptr;
     const int32_t * GGML_CUDA_RESTRICT ids = ids_ptr;
@@ -854,7 +907,16 @@ static __global__ void mul_mat_vec_q_moe(
 
 #pragma unroll
             for (int i = 0; i < c_rows_per_block; ++i) {
-                tmp[i] += vec_dot_q_cuda(vx, &y[kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                if constexpr (type == GGML_TYPE_Q8_0) {
+                    if (t64_layout) {
+                        tmp[i] += vec_dot_q8_0_q8_1_t64(
+                                vx, &y[kby], channel_x, row0 + i, kbx, kqs, ncols_x, nrows_x);
+                    } else {
+                        tmp[i] += vec_dot_q_cuda(vx, &y[kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                    }
+                } else {
+                    tmp[i] += vec_dot_q_cuda(vx, &y[kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                }
             }
         }
     }
@@ -902,7 +964,8 @@ static void mul_mat_vec_q_switch_fusion(
             ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, true, small_k>, launch_params,
                  vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
                  channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-                 sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, nchannels_x, ep_base_enc);
+                 sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, nchannels_x,
+                 ep_base_enc, ggml_cuda_mmvq_t64_layout);
             return;
         }
     }
@@ -913,7 +976,8 @@ static void mul_mat_vec_q_switch_fusion(
     ggml_cuda_kernel_launch(mul_mat_vec_q<type, c_ncols_dst, false, small_k>, launch_params,
         vx, vy, ids, fusion, dst, ncols_x, nchannels_y, stride_row_x, stride_col_y, stride_col_dst,
         channel_ratio, stride_channel_x, stride_channel_y, stride_channel_dst,
-        sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, nchannels_x, ep_base_enc);
+        sample_ratio, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, nchannels_x,
+        ep_base_enc, ggml_cuda_mmvq_t64_layout);
 }
 
 template <ggml_type type>
@@ -935,7 +999,7 @@ static void mul_mat_vec_q_moe_launch(
         vx, vy, ids, dst, ncols_x, nchannels_y, nrows_x,
         stride_row_x, stride_col_y, stride_col_dst,
         stride_channel_x, stride_channel_y, stride_channel_dst,
-        ncols_dst, ids_stride, nchannels_x, ep_base_enc);
+        ncols_dst, ids_stride, nchannels_x, ep_base_enc, ggml_cuda_mmvq_t64_layout);
 }
 
 template <ggml_type type>
@@ -1259,6 +1323,17 @@ void ggml_cuda_mul_mat_vec_q(
     GGML_TENSOR_BINARY_OP_LOCALS;
 
     cudaStream_t stream = ctx.stream();
+    if (ids != nullptr) {
+        ggml_cuda_affinity_wave_normalize_decode((void *) stream);
+    }
+    ggml_cuda_mmvq_t64_layout = ids != nullptr && ggml_cuda_affinity_wave_is_t64(src0->data);
+    if (ggml_cuda_mmvq_t64_layout) {
+        static thread_local bool logged_t64[GGML_CUDA_MAX_DEVICES] = {};
+        if (!logged_t64[ctx.device]) {
+            fprintf(stderr, "AffinityWave: GPU%d T64 MMVQ decode path engaged\n", ctx.device);
+            logged_t64[ctx.device] = true;
+        }
+    }
 
     const size_t ts_src0 = ggml_type_size(src0->type);
     const size_t ts_src1 = ggml_type_size(src1->type);
@@ -1409,6 +1484,7 @@ void ggml_cuda_op_mul_mat_vec_q(
     const int stride_col_y = src1_padded_row_size / QK8_1;
 
     ggml_cuda_mm_fusion_args_device fusion_local{};
+    ggml_cuda_mmvq_t64_layout = false;
     mul_mat_vec_q_switch_type(
         src0_dd_i, src0->type, src1_ddq_i, nullptr, fusion_local, dst_dd_i, ne00, row_diff, src1_ncols, stride_row_x, stride_col_y, nrows_dst,
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, /*ep_base_enc=*/0, stream);

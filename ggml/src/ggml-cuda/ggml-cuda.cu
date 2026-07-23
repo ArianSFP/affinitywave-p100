@@ -3,6 +3,7 @@
 #include "ggml-backend-impl.h"
 
 #include "ggml-cuda/allreduce.cuh"
+#include "ggml-cuda/affinity-wave.cuh"
 #include "ggml-cuda/common.cuh"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
@@ -641,6 +642,7 @@ struct ggml_backend_cuda_buffer_context {
 
 static void ggml_backend_cuda_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
+    ggml_cuda_affinity_wave_forget_range(ctx->dev_ptr, buffer->size);
     delete ctx;
 }
 
@@ -686,14 +688,21 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+    if (offset == 0) {
+        ggml_cuda_affinity_wave_forget_tensor(tensor);
+    }
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+    ggml_cuda_affinity_wave_repack_uploaded_tensor(tensor, offset + size == ggml_nbytes(tensor));
 }
 
 static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+    if (ggml_cuda_affinity_wave_get_tensor_native(tensor, data, offset, size)) {
+        return;
+    }
     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
@@ -703,9 +712,14 @@ static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer,
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+    if (offset == 0) {
+        ggml_cuda_affinity_wave_forget_tensor(tensor);
+    }
     CUDA_CHECK(cudaMemcpy2DAsync(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+    const bool complete = offset == 0 && n_copies == 1 && size == ggml_nbytes(tensor);
+    ggml_cuda_affinity_wave_repack_uploaded_tensor(tensor, complete);
 }
 
 static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer, const struct ggml_tensor * tensor, void * data,
@@ -713,6 +727,10 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+    if (ggml_cuda_affinity_wave_get_tensor_native_2d(
+            tensor, data, offset, size, n_copies, stride_tensor, stride_data)) {
+        return;
+    }
     CUDA_CHECK(cudaMemcpy2DAsync(
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
@@ -3972,7 +3990,13 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+    if (offset == 0) {
+        ggml_cuda_affinity_wave_forget_tensor(tensor);
+    }
+    cudaStream_t stream = cuda_ctx->stream();
+    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, stream));
+    ggml_cuda_affinity_wave_repack_uploaded_tensor_async(
+            tensor, offset + size == ggml_nbytes(tensor), (void *) stream);
 }
 
 static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
@@ -3991,8 +4015,48 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    if (offset == 0) {
+        ggml_cuda_affinity_wave_forget_tensor(tensor);
+    }
+    cudaStream_t stream = cuda_ctx->stream();
     CUDA_CHECK(cudaMemcpy2DAsync(
-        (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+        (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, stream));
+    const bool complete = offset == 0 && n_copies == 1 && size == ggml_nbytes(tensor);
+    ggml_cuda_affinity_wave_repack_uploaded_tensor_async(tensor, complete, (void *) stream);
+}
+
+static void ggml_backend_cuda_affinity_wave_repack_tensor(const ggml_tensor * tensor) {
+    static std::atomic<int> probes{0};
+    if (probes.fetch_add(1) < 8) {
+        fprintf(stderr, "AffinityWave: CUDA repack callback %s\n", tensor->name);
+    }
+    ggml_backend_cuda_buffer_context * buffer_ctx =
+            (ggml_backend_cuda_buffer_context *) tensor->buffer->context;
+    ggml_cuda_set_device(buffer_ctx->device);
+    ggml_cuda_affinity_wave_repack_uploaded_tensor(tensor, true);
+}
+
+static void ggml_backend_cuda_affinity_wave_repack_tensor_async(
+        ggml_backend_t backend, const ggml_tensor * tensor) {
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(cuda_ctx->device);
+    ggml_cuda_affinity_wave_repack_uploaded_tensor_async(tensor, true, (void *) cuda_ctx->stream());
+}
+
+static int ggml_backend_cuda_affinity_wave_live_service(
+        ggml_backend_t const * backends,
+        const ggml_cuda_aw_live_cell * cells,
+        int32_t n_cells,
+        char * error,
+        size_t error_capacity) {
+    void * streams[4];
+    for (int device = 0; device < 4; ++device) {
+        GGML_ASSERT(ggml_backend_is_cuda(backends[device]));
+        ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backends[device]->context;
+        GGML_ASSERT(cuda_ctx->device == device);
+        streams[device] = (void *) cuda_ctx->stream();
+    }
+    return ggml_cuda_affinity_wave_live_service(streams, cells, n_cells, error, error_capacity);
 }
 
 static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data,
@@ -6719,6 +6783,18 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_moe_asyncep_set_enabled") == 0) {
         return (void *)ggml_cuda_moe_asyncep_set_enabled;
     }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_service_bench") == 0) {
+        return (void *)ggml_cuda_affinity_wave_service_bench;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_repack_tensor") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_repack_tensor;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_repack_tensor_async") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_repack_tensor_async;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_live_service") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_live_service;
+    }
     if (strcmp(name, "ggml_backend_tbo_begin_eval") == 0) {
         return (void *)ggml_backend_cuda_tbo_begin_eval;
     }
@@ -6756,6 +6832,7 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
         static std::mutex mutex;
         std::lock_guard<std::mutex> lock(mutex);
         if (!initialized) {
+            ggml_cuda_affinity_wave_validate_env_or_abort();
             ggml_backend_cuda_reg_context * ctx = new ggml_backend_cuda_reg_context;
             const int min_batch_size = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
 
