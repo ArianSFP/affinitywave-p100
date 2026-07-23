@@ -27,24 +27,33 @@ int main(int argc, char ** argv) {
     int tokens_per_cell = 2048;
     int repeats = 12;
     int route_pattern = 0;
+    int devices = 4;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--tokens-per-cell") == 0 && i + 1 < argc) {
             tokens_per_cell = parse_positive(argv[++i], "tokens-per-cell");
         } else if (strcmp(argv[i], "--repeats") == 0 && i + 1 < argc) {
             repeats = parse_positive(argv[++i], "repeats");
+        } else if (strcmp(argv[i], "--devices") == 0 && i + 1 < argc) {
+            devices = parse_positive(argv[++i], "devices");
+            if (devices > 4) {
+                fprintf(stderr, "devices must be between 1 and 4\n");
+                return 2;
+            }
         } else if (strcmp(argv[i], "--route-pattern") == 0 && i + 1 < argc) {
             const char * pattern = argv[++i];
             if (strcmp(pattern, "uniform") == 0) {
                 route_pattern = 0;
             } else if (strcmp(pattern, "tail-mix") == 0) {
                 route_pattern = 1;
+            } else if (strcmp(pattern, "edge-mix") == 0) {
+                route_pattern = 2;
             } else {
                 fprintf(stderr, "invalid route pattern: %s\n", pattern);
                 return 2;
             }
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("usage: %s [--tokens-per-cell N] [--repeats N] "
-                   "[--route-pattern uniform|tail-mix]\n", argv[0]);
+            printf("usage: %s [--devices N] [--tokens-per-cell N] [--repeats N] "
+                   "[--route-pattern uniform|tail-mix|edge-mix]\n", argv[0]);
             printf("requires GGML_CUDA_AFFINITY_WAVE=1 and GGML_CUDA_AW_MAP=<manifest>\n");
             return 0;
         } else {
@@ -61,19 +70,21 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    constexpr int devices = 4;
-    std::array<ggml_cuda_aw_bench_result, devices> results{};
-    std::array<std::array<char, 512>, devices> errors{};
-    std::array<int, devices> status{};
-    std::array<std::thread, devices> workers;
+    constexpr int max_devices = 4;
+    std::array<ggml_cuda_aw_bench_result, max_devices> results{};
+    std::array<std::array<char, 512>, max_devices> errors{};
+    std::array<int, max_devices> status{};
+    std::array<std::thread, max_devices> workers;
     for (int device = 0; device < devices; ++device) {
         workers[device] = std::thread([&, device]() {
-            const ggml_cuda_aw_bench_params params = { device, 4, tokens_per_cell, repeats, route_pattern };
+            const ggml_cuda_aw_bench_params params = {
+                device, devices, 4, tokens_per_cell, repeats, route_pattern
+            };
             status[device] = bench(&params, &results[device], errors[device].data(), errors[device].size());
         });
     }
-    for (auto & worker : workers) {
-        worker.join();
+    for (int device = 0; device < devices; ++device) {
+        workers[device].join();
     }
 
     double min_tflops = 1e30;
@@ -94,7 +105,7 @@ int main(int argc, char ** argv) {
                "\"layout_ms\":%.6f,\"down_expand_ms\":%.6f,"
                "\"device_bytes\":%llu,\"free_bytes_after\":%llu,"
                "\"descriptors\":%d,\"route_rows\":%d,\"tiles_m64\":%d,\"tiles_m32\":%d,"
-               "\"tiles_m16\":%d,"
+               "\"tiles_m16\":%d,\"q8_kernel\":\"%s\","
                "\"check_ran\":%d,\"check_passed\":%d,\"check_count\":%llu,"
                "\"check_mismatches\":%llu,\"check_first_mismatch\":%llu,"
                "\"check_expected\":%u,\"check_observed\":%u}\n",
@@ -104,6 +115,7 @@ int main(int argc, char ** argv) {
                 r.layout_ms, r.down_expand_ms,
                 (unsigned long long) r.device_bytes, (unsigned long long) r.free_bytes_after,
                 r.descriptors, r.route_rows, r.tiles_m64, r.tiles_m32, r.tiles_m16,
+                r.q8_kernel == 1 ? "interleave" : "cuda",
                 r.check_ran, r.check_passed,
                 (unsigned long long) r.check_count, (unsigned long long) r.check_mismatches,
                 (unsigned long long) r.check_first_mismatch,

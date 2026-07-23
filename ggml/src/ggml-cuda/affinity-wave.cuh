@@ -10,6 +10,7 @@ struct ggml_tensor;
 // backend proc-address table; it does not change the public llama API.
 struct ggml_cuda_aw_bench_params {
     int32_t device;
+    int32_t participants;
     int32_t active_cells;
     int32_t tokens_per_cell;
     int32_t repeats;
@@ -40,6 +41,7 @@ struct ggml_cuda_aw_bench_result {
     int32_t tiles_m64;
     int32_t tiles_m32;
     int32_t tiles_m16;
+    int32_t q8_kernel;
     int32_t check_ran;
     int32_t check_passed;
     uint64_t check_count;
@@ -54,11 +56,14 @@ struct ggml_cuda_aw_live_cell {
     int32_t       home_device;
     int32_t       tokens;
     int32_t       reserved;
+    size_t        ids_stride;
+    size_t        weights_stride;
     const float * input;
     const int32_t * ids;
     const float * weights;
     float *       output;
     float *       shared_output;
+    const float * reference;
 };
 
 // Validate the four opt-in environment controls and the placement manifest.

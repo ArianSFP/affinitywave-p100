@@ -12,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <tuple>
 
 static bool ggml_is_power_of_2(int n) {
     return (n & (n - 1)) == 0;
@@ -1561,6 +1562,78 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
 
     const T mask_keep = llama_cast<T>(0.0f);
     const T mask_drop = llama_cast<T>(-INFINITY);
+
+    if constexpr (causal && !swa && !alibi) {
+        struct mask_position {
+            llama_pos p;
+            llama_pos y;
+            llama_pos x;
+            uint32_t j;
+        };
+        auto position_less = [](const mask_position & a, const mask_position & b) {
+            return std::tie(a.p, a.y, a.x, a.j) < std::tie(b.p, b.y, b.x, b.j);
+        };
+        bool monotonic_single_sequence =
+                n_stream == 1 && ubatch->n_tokens > 0 &&
+                getenv("GGML_CUDA_AFFINITY_WAVE") != nullptr;
+        const llama_seq_id seq_id = ubatch->seq_id[0][0];
+        mask_position previous = {
+            ubatch->pos[0],
+            is_2d ? ubatch->pos[ubatch->n_tokens] : 0,
+            is_2d ? ubatch->pos[ubatch->n_tokens*2] : 0,
+            0
+        };
+        for (uint32_t i = 0; monotonic_single_sequence && i < ubatch->n_tokens; ++i) {
+            const mask_position current = {
+                ubatch->pos[i],
+                is_2d ? ubatch->pos[i + ubatch->n_tokens] : 0,
+                is_2d ? ubatch->pos[i + ubatch->n_tokens*2] : 0,
+                0
+            };
+            monotonic_single_sequence =
+                    ubatch->seq_id[i][0] == seq_id &&
+                    (i == 0 || !position_less(current, previous));
+            previous = current;
+        }
+        if (monotonic_single_sequence) {
+            const auto & cells = v_cells.at(seq_to_stream[seq_id]);
+            std::vector<mask_position> visible;
+            visible.reserve(n_kv);
+            for (uint32_t j = 0; j < n_kv; ++j) {
+                if (!cells.is_empty(j) && cells.seq_has(j, seq_id)) {
+                    const auto & ext = cells.ext_get(j);
+                    visible.push_back({
+                        cells.pos_get(j),
+                        is_2d ? ext.y : 0,
+                        is_2d ? ext.x : 0,
+                        j
+                    });
+                }
+            }
+            std::sort(visible.begin(), visible.end(), position_less);
+
+            size_t n_visible = 0;
+            for (uint32_t i = 0; i < ubatch->n_tokens; ++i) {
+                T * row = data + (size_t) i*n_kv;
+                if (i == 0) {
+                    std::fill(row, row + n_kv, mask_drop);
+                } else {
+                    memcpy(row, row - n_kv, (size_t) n_kv*sizeof(T));
+                }
+                const mask_position current = {
+                    ubatch->pos[i],
+                    is_2d ? ubatch->pos[i + ubatch->n_tokens] : 0,
+                    is_2d ? ubatch->pos[i + ubatch->n_tokens*2] : 0,
+                    UINT32_MAX
+                };
+                while (n_visible < visible.size() && !position_less(current, visible[n_visible])) {
+                    row[visible[n_visible].j] = mask_keep;
+                    ++n_visible;
+                }
+            }
+            return;
+        }
+    }
 
     // the min position in the batch for each sequence
     llama_pos seq_pos_min[LLAMA_MAX_SEQ];

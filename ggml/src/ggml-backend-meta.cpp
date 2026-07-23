@@ -326,24 +326,34 @@ static size_t ggml_backend_meta_buffer_type_get_alloc_size(ggml_backend_buffer_t
     auto aw_max_lane = [&](int64_t extent) {
         return aw_lane_balance && n_simple_bufts == 4 ? (extent*300 + 999)/1000 : extent/4;
     };
-    if (aw_tokens > 0 && ggml_is_contiguous(tensor) && tensor->view_src == nullptr) {
+    const bool aw_full_alloc = getenv("GGML_CUDA_AW_FULL_ALLOC") != nullptr &&
+            strcmp(getenv("GGML_CUDA_AW_FULL_ALLOC"), "0") != 0;
+    if (aw_tokens > 0 && !aw_full_alloc && ggml_is_contiguous(tensor) && tensor->view_src == nullptr) {
         lane_tensor = *tensor;
         bool changed = false;
         if (strstr(tensor->name, "attn_inp_kq_mask") != nullptr && lane_tensor.ne[1] == aw_tokens) {
             lane_tensor.ne[1] = aw_max_lane(lane_tensor.ne[1]);
             changed = true;
         } else {
+            int split_dim = -1;
             for (int d = 0; d < GGML_MAX_DIMS; ++d) {
                 if (lane_tensor.ne[d] == aw_tokens || lane_tensor.ne[d] == 4*aw_tokens) {
-                    lane_tensor.ne[d] = aw_max_lane(lane_tensor.ne[d]);
-                    changed = true;
+                    split_dim = d;
                 } else if (lane_tensor.ne[d] == aw_tokens + 3) {
-                    lane_tensor.ne[d] = aw_max_lane(aw_tokens) + 3;
-                    changed = true;
+                    split_dim = d;
                 } else if (lane_tensor.ne[d] == aw_tokens + 128) {
-                    lane_tensor.ne[d] = aw_max_lane(aw_tokens) + 128;
-                    changed = true;
+                    split_dim = d;
                 }
+            }
+            if (split_dim >= 0) {
+                if (lane_tensor.ne[split_dim] == aw_tokens + 3) {
+                    lane_tensor.ne[split_dim] = aw_max_lane(aw_tokens) + 3;
+                } else if (lane_tensor.ne[split_dim] == aw_tokens + 128) {
+                    lane_tensor.ne[split_dim] = aw_max_lane(aw_tokens) + 128;
+                } else {
+                    lane_tensor.ne[split_dim] = aw_max_lane(lane_tensor.ne[split_dim]);
+                }
+                changed = true;
             }
         }
         if (changed) {
@@ -570,6 +580,34 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             const int64_t hi = aw_lane_balance && n_bufs == 4 ?
                     balanced_boundary(j + 1) : base*(int64_t) (j + 1)/(int64_t) n_bufs;
             ret.ne[j] = hi - lo;
+        }
+        return ret;
+    };
+
+    auto aw_output_suffix_split = [&](int64_t n_outputs) {
+        const char * tokens_env = getenv("GGML_CUDA_AW_WAVE_TOKENS");
+        GGML_ASSERT(tokens_env != nullptr);
+        const int64_t n_tokens = atoll(tokens_env);
+        GGML_ASSERT(n_outputs > 0 && n_outputs <= n_tokens);
+
+        ggml_backend_meta_split_state ret;
+        memset(&ret, 0, sizeof(ret));
+        ret.axis = GGML_BACKEND_SPLIT_AXIS_0;
+        ret.nr[0] = 1;
+        ret.n_segments = 1;
+        const int64_t output_begin = n_tokens - n_outputs;
+        static constexpr int64_t balanced_cumulative[5] = { 0, 270, 525, 768, 1000 };
+        auto token_boundary = [&](size_t boundary) {
+            if (aw_lane_balance && n_bufs == 4) {
+                const int64_t raw = n_tokens*balanced_cumulative[boundary];
+                return n_tokens >= 64 && n_tokens % 16 == 0 ? ((raw + 8000)/16000)*16 : raw/1000;
+            }
+            return n_tokens*(int64_t) boundary/(int64_t) n_bufs;
+        };
+        for (size_t j = 0; j < n_bufs; ++j) {
+            const int64_t token_lo = token_boundary(j);
+            const int64_t token_hi = token_boundary(j + 1);
+            ret.ne[j] = std::max<int64_t>(0, token_hi - std::max(token_lo, output_begin));
         }
         return ret;
     };
@@ -878,7 +916,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
     auto handle_get_rows = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
         if (aw_wave_token_split && strcmp(tensor->name, "result_norm") == 0 &&
                 src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_1 &&
-                src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+                src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_0) {
             return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
         }
         if (aw_wave_token_split && src_ss[0].axis == GGML_BACKEND_SPLIT_AXIS_2 &&
@@ -1006,6 +1044,9 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         if (ggml_nelements(tensor) == 0) {
             return {GGML_BACKEND_SPLIT_AXIS_UNKNOWN, {0}, {1}, 1};
         }
+        if (aw_wave_token_split && tensor->op == GGML_OP_NONE && strstr(tensor->name, "out_ids") != nullptr) {
+            return aw_output_suffix_split(tensor->ne[0]);
+        }
         if (ggml_backend_buffer_get_usage(tensor->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE && tensor->view_src == nullptr) {
             ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(tensor->buffer));
             const ggml_backend_meta_device_context * dev_ctx = (const ggml_backend_meta_device_context *) dev->context;
@@ -1041,6 +1082,8 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                     split_state = aw_even_split(GGML_BACKEND_SPLIT_AXIS_1, tensor->ne[1]);
                 } else if (aw_wave_token_split && strstr(tensor->name, "inp_pos") != nullptr) {
                     split_state = aw_even_split(GGML_BACKEND_SPLIT_AXIS_0, tensor->ne[0], 4);
+                } else if (aw_wave_token_split && strstr(tensor->name, "out_ids") != nullptr) {
+                    split_state = aw_output_suffix_split(tensor->ne[0]);
                 } else if (aw_wave_token_split &&
                         (strstr(tensor->name, "self_k_idxs") != nullptr || strstr(tensor->name, "self_v_idxs") != nullptr)) {
                     split_state = aw_even_split(GGML_BACKEND_SPLIT_AXIS_0, tensor->ne[0]);
@@ -1243,7 +1286,8 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                  tensor->op == GGML_OP_SSM_CONV || tensor->op == GGML_OP_GATED_DELTA_NET ||
                  strstr(tensor->name, "conv_input-") != nullptr ||
                  strstr(tensor->name, "attn_output-") != nullptr ||
-                 strstr(tensor->name, "attn_gated-") != nullptr);
+                 strstr(tensor->name, "attn_gated-") != nullptr ||
+                 strcmp(tensor->name, "result_norm") == 0);
         if (split_state.axis >= 0 && split_state.axis < GGML_MAX_DIMS && !aw_custom_layout) {
             bool first_src_split_by_axis = true;
             const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(tensor->buffer);
@@ -1448,6 +1492,15 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
             if (aw_wave_token_split && strstr(tensor->name, "conv_state_last-") != nullptr) {
                 GGML_ASSERT(t_ij->view_src->ne[0] >= t_ij->ne[0]);
                 t_ij->view_offs = (t_ij->view_src->ne[0] - t_ij->ne[0]) * t_ij->view_src->nb[0];
+                t_ij->nb[1] = t_ij->view_src->nb[1];
+                t_ij->nb[2] = t_ij->view_src->nb[2];
+                t_ij->nb[3] = t_ij->view_src->nb[3];
+            }
+            if (aw_wave_token_split && strstr(tensor->name, "new_state-") != nullptr) {
+                GGML_ASSERT(ggml_is_contiguous(t_ij));
+                GGML_ASSERT(ggml_is_contiguous(t_ij->view_src));
+                GGML_ASSERT(ggml_nbytes(t_ij->view_src) >= ggml_nbytes(t_ij));
+                t_ij->view_offs = ggml_nbytes(t_ij->view_src) - ggml_nbytes(t_ij);
             }
             if (t_ij->view_offs > 0 && split_dim >= 0 && split_dim < GGML_MAX_DIMS) {
                 GGML_ASSERT(tensor->ne[split_dim] != 0);
@@ -1580,6 +1633,7 @@ static const std::vector<int32_t> * ggml_backend_meta_eplb_perm(const char * nam
 
 using ggml_backend_affinity_wave_repack_tensor_t = void (*)(const ggml_tensor * tensor);
 using ggml_backend_affinity_wave_repack_tensor_async_t = void (*)(ggml_backend_t backend, const ggml_tensor * tensor);
+using ggml_backend_affinity_wave_stream_fence_t = void (*)(ggml_backend_t backend, bool broadcast);
 
 static void ggml_backend_meta_affinity_wave_repack_tensor(ggml_tensor * tensor) {
     if (getenv("GGML_CUDA_AFFINITY_WAVE") != nullptr && strstr(tensor->name, "exps") != nullptr) {
@@ -1620,6 +1674,14 @@ static void ggml_backend_meta_affinity_wave_repack_tensor_async(
     }
 }
 
+static void ggml_backend_meta_affinity_wave_stream_fence(ggml_backend_t backend, bool broadcast) {
+    auto fn = (ggml_backend_affinity_wave_stream_fence_t) ggml_backend_reg_get_proc_address(
+            ggml_backend_dev_backend_reg(ggml_backend_get_device(backend)),
+            "ggml_backend_cuda_affinity_wave_stream_fence");
+    GGML_ASSERT(fn != nullptr);
+    fn(backend, broadcast);
+}
+
 static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(buffer);
     GGML_ASSERT(ggml_is_contiguous(tensor));
@@ -1651,6 +1713,45 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     }
 
     const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ false);
+    if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_0 && strstr(tensor->name, "out_ids") != nullptr) {
+        GGML_ASSERT(tensor->type == GGML_TYPE_I32);
+        GGML_ASSERT(offset == 0 && size == ggml_nbytes(tensor));
+        const char * tokens_env = getenv("GGML_CUDA_AW_WAVE_TOKENS");
+        GGML_ASSERT(tokens_env != nullptr);
+        const int64_t n_tokens = atoll(tokens_env);
+        GGML_ASSERT(n_tokens > 0);
+
+        const bool lane_balance = getenv("GGML_CUDA_AW_LANE_BALANCE") != nullptr &&
+                strcmp(getenv("GGML_CUDA_AW_LANE_BALANCE"), "0") != 0;
+        static constexpr int64_t balanced_cumulative[5] = { 0, 270, 525, 768, 1000 };
+        auto token_boundary = [&](size_t boundary) {
+            if (lane_balance && n_bufs == 4) {
+                const int64_t raw = n_tokens*balanced_cumulative[boundary];
+                return n_tokens >= 64 && n_tokens % 16 == 0 ? ((raw + 8000)/16000)*16 : raw/1000;
+            }
+            return n_tokens*(int64_t) boundary/(int64_t) n_bufs;
+        };
+        size_t offset_data = 0;
+        int64_t token_lo = token_boundary(0);
+        for (size_t j = 0; j < n_bufs; ++j) {
+            ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
+            const int64_t n_ids = simple_tensor->ne[0];
+            const int64_t token_hi = token_boundary(j + 1);
+            std::vector<int32_t> local_ids(n_ids);
+            for (int64_t i = 0; i < n_ids; ++i) {
+                const int32_t id = ((const int32_t *) data)[offset_data/sizeof(int32_t) + i];
+                GGML_ASSERT(id >= token_lo && id < token_hi);
+                local_ids[i] = id - token_lo;
+            }
+            if (n_ids != 0) {
+                ggml_backend_tensor_set(simple_tensor, local_ids.data(), 0, local_ids.size()*sizeof(int32_t));
+            }
+            offset_data += local_ids.size()*sizeof(int32_t);
+            token_lo = token_hi;
+        }
+        GGML_ASSERT(offset_data == size);
+        return;
+    }
     if (getenv("GGML_CUDA_AFFINITY_WAVE") != nullptr && strstr(tensor->name, "exps") != nullptr) {
         static int probes = 0;
         if (probes++ < 8) {
@@ -2027,11 +2128,14 @@ struct ggml_backend_meta_aw_live_cell {
     int32_t       home_device;
     int32_t       tokens;
     int32_t       reserved;
+    size_t        ids_stride;
+    size_t        weights_stride;
     const float * input;
     const int32_t * ids;
     const float * weights;
     float *       output;
     float *       shared_output;
+    const float * reference;
 };
 
 using ggml_backend_meta_aw_live_service_t = int (*)(
@@ -2040,6 +2144,16 @@ using ggml_backend_meta_aw_live_service_t = int (*)(
         int32_t n_cells,
         char * error,
         size_t error_capacity);
+
+using ggml_backend_meta_aw_corridor_copy_t = int (*)(
+        ggml_backend_t backend_src,
+        ggml_backend_t backend_dst,
+        const ggml_tensor * src,
+        ggml_tensor * dst);
+
+using ggml_backend_meta_aw_corridor_wait_t = int (*)(
+        ggml_backend_t backend_src,
+        ggml_backend_t backend_dst);
 
 static ggml_guid_t ggml_backend_meta_guid() {
     static ggml_guid guid = {0xf1, 0x0e, 0x34, 0xcf, 0x9c, 0x6f, 0x43, 0xcb, 0x96, 0x92, 0xbe, 0x8e, 0xbb, 0x71, 0x3f, 0xda};
@@ -2138,6 +2252,8 @@ struct ggml_backend_meta_context {
     size_t                      max_subgraphs = 0;
     size_t                      n_subgraphs   = 0;
     uint64_t                    uid           = 0;
+    int64_t                     aw_precaptured_tokens = -1;
+    std::vector<ggml_backend_buffer_ptr> aw_input_snapshot_buffers;
     std::unique_ptr<submit_pool> submit;
 
     void *                                      comm_ctx              = nullptr;
@@ -2148,6 +2264,8 @@ struct ggml_backend_meta_context {
     ggml_backend_tbo_begin_eval_t               tbo_begin_eval        = nullptr; // [TAG_META_TBO] optional
     ggml_backend_tbo_end_eval_t                 tbo_end_eval          = nullptr; // [TAG_META_TBO] optional
     ggml_backend_meta_aw_live_service_t         aw_live_service       = nullptr;
+    ggml_backend_meta_aw_corridor_copy_t        aw_corridor_copy      = nullptr;
+    ggml_backend_meta_aw_corridor_wait_t        aw_corridor_wait      = nullptr;
 
     ggml_backend_meta_context(ggml_backend_dev_t meta_dev, const char * params) {
         const size_t n_devs = ggml_backend_meta_dev_n_devs(meta_dev);
@@ -2198,6 +2316,12 @@ struct ggml_backend_meta_context {
         aw_live_service = (ggml_backend_meta_aw_live_service_t)
             ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                 ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_live_service");
+        aw_corridor_copy = (ggml_backend_meta_aw_corridor_copy_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_corridor_copy");
+        aw_corridor_wait = (ggml_backend_meta_aw_corridor_wait_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_corridor_wait");
     }
 
     ~ggml_backend_meta_context() {
@@ -2243,6 +2367,46 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
     const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ false);
     GGML_ASSERT(split_state.n_segments == 1);
     GGML_ASSERT(split_state.nr[0]      == 1);
+
+    if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_0 && strstr(tensor->name, "out_ids") != nullptr) {
+        GGML_ASSERT(tensor->type == GGML_TYPE_I32);
+        GGML_ASSERT(size == ggml_nbytes(tensor));
+        const char * tokens_env = getenv("GGML_CUDA_AW_WAVE_TOKENS");
+        GGML_ASSERT(tokens_env != nullptr);
+        const int64_t n_tokens = atoll(tokens_env);
+        GGML_ASSERT(n_tokens > 0);
+
+        const bool lane_balance = getenv("GGML_CUDA_AW_LANE_BALANCE") != nullptr &&
+                strcmp(getenv("GGML_CUDA_AW_LANE_BALANCE"), "0") != 0;
+        static constexpr int64_t balanced_cumulative[5] = { 0, 270, 525, 768, 1000 };
+        auto token_boundary = [&](size_t boundary) {
+            if (lane_balance && n_backends == 4) {
+                const int64_t raw = n_tokens*balanced_cumulative[boundary];
+                return n_tokens >= 64 && n_tokens % 16 == 0 ? ((raw + 8000)/16000)*16 : raw/1000;
+            }
+            return n_tokens*(int64_t) boundary/(int64_t) n_backends;
+        };
+        size_t offset_data = 0;
+        int64_t token_lo = token_boundary(0);
+        for (size_t j = 0; j < n_backends; ++j) {
+            ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
+            const int64_t n_ids = simple_tensor->ne[0];
+            const int64_t token_hi = token_boundary(j + 1);
+            std::vector<int32_t> local_ids(n_ids);
+            for (int64_t i = 0; i < n_ids; ++i) {
+                const int32_t id = ((const int32_t *) data)[offset_data/sizeof(int32_t) + i];
+                GGML_ASSERT(id >= token_lo && id < token_hi);
+                local_ids[i] = id - token_lo;
+            }
+            if (n_ids != 0) {
+                ggml_backend_tensor_set(simple_tensor, local_ids.data(), 0, local_ids.size()*sizeof(int32_t));
+            }
+            offset_data += local_ids.size()*sizeof(int32_t);
+            token_lo = token_hi;
+        }
+        GGML_ASSERT(offset_data == size);
+        return;
+    }
 
     switch (split_state.axis) {
         case GGML_BACKEND_SPLIT_AXIS_0:
@@ -2335,6 +2499,13 @@ static void ggml_backend_meta_synchronize(ggml_backend_t backend) {
     }
 }
 
+static ggml_tensor * ggml_backend_meta_aw_view_root(ggml_tensor * tensor) {
+    while (tensor->view_src != nullptr) {
+        tensor = tensor->view_src;
+    }
+    return tensor;
+}
+
 struct ggml_backend_meta_aw_cell {
     int layer;
     int begin;
@@ -2346,8 +2517,15 @@ struct ggml_backend_meta_aw_cell {
     int post_begin;
     int end;
     int conv_input;
+    int conv_state_last;
+    int conv_state_update;
+    int conv_state_clear;
     int recurrent;
+    int new_state;
+    int state_update;
+    int state_clear;
     int flash_attn;
+    int attention_state_end;
 };
 
 static bool ggml_backend_meta_aw_name_is(const ggml_tensor * tensor, const char * base, int layer) {
@@ -2356,21 +2534,58 @@ static bool ggml_backend_meta_aw_name_is(const ggml_tensor * tensor, const char 
     return strcmp(tensor->name, name) == 0;
 }
 
+static bool ggml_backend_meta_aw_name_contains(const ggml_tensor * tensor, const char * base, int layer) {
+    char name[GGML_MAX_NAME];
+    snprintf(name, sizeof(name), "%s-%d", base, layer);
+    return strstr(tensor->name, name) != nullptr;
+}
+
 static std::vector<ggml_backend_meta_aw_cell> ggml_backend_meta_aw_partition(const ggml_cgraph * cgraph) {
     std::vector<ggml_backend_meta_aw_cell> cells;
     int begin = 0;
 
     for (int layer = 0; ; ++layer) {
-        ggml_backend_meta_aw_cell cell = { layer, begin, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+        ggml_backend_meta_aw_cell cell = {
+            layer, begin, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+        };
         for (int i = begin; i < cgraph->n_nodes; ++i) {
             const ggml_tensor * node = cgraph->nodes[i];
-            if (ggml_backend_meta_aw_name_is(node, "conv_input", layer)) {
+            char conv_cache_name[GGML_MAX_NAME];
+            char state_cache_name[GGML_MAX_NAME];
+            snprintf(conv_cache_name, sizeof(conv_cache_name), "cache_r_l%d", layer);
+            snprintf(state_cache_name, sizeof(state_cache_name), "cache_s_l%d", layer);
+            ggml_tensor * root = node->view_src != nullptr ?
+                    ggml_backend_meta_aw_view_root(const_cast<ggml_tensor *>(node)) : nullptr;
+            if (node->op == GGML_OP_SCALE && root != nullptr &&
+                    strcmp(root->name, conv_cache_name) == 0) {
+                cell.conv_state_clear = i;
+            } else if (node->op == GGML_OP_SCALE && root != nullptr &&
+                    strcmp(root->name, state_cache_name) == 0) {
+                cell.state_clear = i;
+            } else if (ggml_backend_meta_aw_name_is(node, "conv_input", layer)) {
                 cell.conv_input = i;
+            } else if (ggml_backend_meta_aw_name_is(node, "conv_state_last", layer)) {
+                cell.conv_state_last = i;
+            } else if (ggml_backend_meta_aw_name_is(node, "conv_state_update", layer)) {
+                cell.conv_state_update = i;
             } else if (node->op == GGML_OP_GATED_DELTA_NET) {
                 cell.recurrent = i;
+            } else if (ggml_backend_meta_aw_name_is(node, "new_state", layer)) {
+                cell.new_state = i;
+            } else if (node->op == GGML_OP_CPY && node->src[0] != nullptr &&
+                    ggml_backend_meta_aw_name_is(node->src[0], "new_state", layer)) {
+                cell.state_update = i;
             } else if (node->op == GGML_OP_FLASH_ATTN_EXT) {
                 cell.flash_attn = i;
-            } else if (ggml_backend_meta_aw_name_is(node, "ffn_moe_gate", layer) && node->op == GGML_OP_MUL_MAT_ID) {
+            } else if (node->op == GGML_OP_SET_ROWS) {
+                char state_name[GGML_MAX_NAME];
+                snprintf(state_name, sizeof(state_name), "cache_v_l%d", layer);
+                if (strncmp(node->name, state_name, strlen(state_name)) == 0) {
+                    cell.attention_state_end = i;
+                }
+            } else if ((ggml_backend_meta_aw_name_is(node, "ffn_moe_gate", layer) ||
+                        ggml_backend_meta_aw_name_is(node, "ffn_moe_up", layer)) &&
+                    node->op == GGML_OP_MUL_MAT_ID && cell.expert_begin < 0) {
                 cell.expert_begin = i;
             } else if (ggml_backend_meta_aw_name_is(node, "ffn_moe_out", layer)) {
                 cell.expert_end = i;
@@ -2401,6 +2616,15 @@ static std::vector<ggml_backend_meta_aw_cell> ggml_backend_meta_aw_partition(con
         GGML_ASSERT(cell.end          == cell.post_begin + 1);
         GGML_ASSERT((cell.recurrent >= 0) != (cell.flash_attn >= 0));
         GGML_ASSERT((cell.recurrent < 0) == (cell.conv_input < 0));
+        GGML_ASSERT((cell.recurrent < 0) == (cell.conv_state_last < 0));
+        GGML_ASSERT((cell.recurrent < 0) == (cell.conv_state_update < 0));
+        GGML_ASSERT((cell.recurrent < 0) == (cell.conv_state_clear < 0));
+        GGML_ASSERT((cell.recurrent < 0) == (cell.new_state < 0));
+        GGML_ASSERT((cell.recurrent < 0) == (cell.state_update < 0));
+        GGML_ASSERT((cell.recurrent < 0) == (cell.state_clear < 0));
+        GGML_ASSERT((cell.flash_attn < 0) == (cell.attention_state_end < 0));
+        GGML_ASSERT(cell.attention_state_end < 0 ||
+                (cell.attention_state_end >= cell.begin && cell.attention_state_end < cell.flash_attn));
 
         const ggml_tensor * post = cgraph->nodes[cell.post_begin];
         GGML_ASSERT(post->op == GGML_OP_ADD);
@@ -2428,13 +2652,6 @@ static std::vector<ggml_backend_meta_aw_cell> ggml_backend_meta_aw_partition(con
     }
 
     return cells;
-}
-
-static ggml_tensor * ggml_backend_meta_aw_view_root(ggml_tensor * tensor) {
-    while (tensor->view_src != nullptr) {
-        tensor = tensor->view_src;
-    }
-    return tensor;
 }
 
 static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
@@ -2939,10 +3156,15 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
 
     if (getenv("GGML_CUDA_AW_WAVE_DENSE_BENCH") != nullptr &&
             strcmp(getenv("GGML_CUDA_AW_WAVE_DENSE_BENCH"), "0") != 0) {
+        const int64_t dense_begin_us = ggml_time_us();
         const bool fixed_only = strcmp(getenv("GGML_CUDA_AW_WAVE_DENSE_BENCH"), "fixed") == 0;
         const bool live_service = strcmp(getenv("GGML_CUDA_AW_WAVE_DENSE_BENCH"), "service") == 0;
+        const bool return_output = live_service && getenv("GGML_CUDA_AW_WAVE_OUTPUT") != nullptr &&
+                strcmp(getenv("GGML_CUDA_AW_WAVE_OUTPUT"), "0") != 0;
         const bool shared_service = live_service && getenv("GGML_CUDA_AW_SHARED_SERVICE") != nullptr &&
                 strcmp(getenv("GGML_CUDA_AW_SHARED_SERVICE"), "0") != 0;
+        const bool verify_local = live_service && getenv("GGML_CUDA_AW_VERIFY_LOCAL") != nullptr &&
+                strcmp(getenv("GGML_CUDA_AW_VERIFY_LOCAL"), "0") != 0;
         const std::vector<ggml_backend_meta_aw_cell> cells = ggml_backend_meta_aw_partition(cgraph);
         if (cells.size() == 40 && n_backends == 4) {
             if (!backend_ctx->submit) {
@@ -2950,11 +3172,24 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             }
             struct input_snapshot {
                 ggml_tensor * tensor;
+                void * original_data;
                 size_t offset;
                 ggml_tensor persistent;
             };
             std::array<std::vector<input_snapshot>, 4> input_snapshots;
-            std::array<ggml_backend_buffer_ptr, 4> input_snapshot_buffers;
+            if (backend_ctx->aw_input_snapshot_buffers.size() != n_backends) {
+                backend_ctx->aw_input_snapshot_buffers.resize(n_backends);
+            }
+            struct input_snapshot_restore {
+                std::array<std::vector<input_snapshot>, 4> * snapshots;
+                ~input_snapshot_restore() {
+                    for (auto & lane : *snapshots) {
+                        for (input_snapshot & snapshot : lane) {
+                            snapshot.tensor->data = snapshot.original_data;
+                        }
+                    }
+                }
+            } restore_inputs = { &input_snapshots };
             for (size_t j = 0; j < n_backends; ++j) {
                 size_t snapshot_bytes = 0;
                 auto & bcj = backend_ctx->backend_configs[j];
@@ -2972,6 +3207,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                                 snapshot_bytes = GGML_PAD(snapshot_bytes, 256);
                                 input_snapshot snapshot = {};
                                 snapshot.tensor = src;
+                                snapshot.original_data = src->data;
                                 snapshot.offset = snapshot_bytes;
                                 input_snapshots[j].push_back(snapshot);
                                 snapshot_bytes += ggml_nbytes(src);
@@ -2979,12 +3215,16 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         }
                     }
                 }
-                input_snapshot_buffers[j].reset(ggml_backend_alloc_buffer(bcj.backend, snapshot_bytes));
-                GGML_ASSERT(input_snapshot_buffers[j] != nullptr);
-                char * base = (char *) ggml_backend_buffer_get_base(input_snapshot_buffers[j].get());
+                ggml_backend_buffer_ptr & snapshot_buffer = backend_ctx->aw_input_snapshot_buffers[j];
+                if (snapshot_buffer == nullptr ||
+                        ggml_backend_buffer_get_size(snapshot_buffer.get()) < snapshot_bytes) {
+                    snapshot_buffer.reset(ggml_backend_alloc_buffer(bcj.backend, snapshot_bytes));
+                }
+                GGML_ASSERT(snapshot_buffer != nullptr);
+                char * base = (char *) ggml_backend_buffer_get_base(snapshot_buffer.get());
                 for (input_snapshot & snapshot : input_snapshots[j]) {
                     snapshot.persistent = *snapshot.tensor;
-                    snapshot.persistent.buffer = input_snapshot_buffers[j].get();
+                    snapshot.persistent.buffer = snapshot_buffer.get();
                     snapshot.persistent.view_src = nullptr;
                     snapshot.persistent.view_offs = 0;
                     snapshot.persistent.data = base + snapshot.offset;
@@ -3001,8 +3241,46 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             const char * lane_stagger_env = getenv("GGML_CUDA_AW_LANE_STAGGER");
             const int lane_stagger = lane_stagger_env != nullptr ? atoi(lane_stagger_env) : 1;
             GGML_ASSERT(lane_stagger > 0 && lane_stagger <= (int) cells.size());
+            const char * corridor_early_env = getenv("GGML_CUDA_AW_CORRIDOR_EARLY");
+            const bool corridor_early =
+                    corridor_early_env != nullptr && strcmp(corridor_early_env, "0") != 0;
+            GGML_ASSERT(!corridor_early ||
+                    strcmp(corridor_early_env, "1") == 0 ||
+                    strcmp(corridor_early_env, "all") == 0 ||
+                    strcmp(corridor_early_env, "recurrent") == 0 ||
+                    strcmp(corridor_early_env, "attention") == 0);
+            GGML_ASSERT(!corridor_early ||
+                    (backend_ctx->aw_corridor_copy != nullptr &&
+                     backend_ctx->aw_corridor_wait != nullptr));
+            auto corridor_early_for = [&](const ggml_backend_meta_aw_cell & cell) {
+                return corridor_early &&
+                        (strcmp(corridor_early_env, "1") == 0 ||
+                         strcmp(corridor_early_env, "all") == 0 ||
+                         (strcmp(corridor_early_env, "recurrent") == 0 && cell.recurrent >= 0) ||
+                         (strcmp(corridor_early_env, "attention") == 0 && cell.recurrent < 0));
+            };
+            const bool corridor_state_split =
+                    getenv("GGML_CUDA_AW_CORRIDOR_STATE_SPLIT") != nullptr &&
+                    strcmp(getenv("GGML_CUDA_AW_CORRIDOR_STATE_SPLIT"), "0") != 0;
+            GGML_ASSERT(!corridor_state_split || corridor_early);
+            auto corridor_state_split_for = [&](const ggml_backend_meta_aw_cell & cell, size_t lane) {
+                return corridor_state_split && lane + 1 < n_backends &&
+                        cell.attention_state_end >= 0 && corridor_early_for(cell);
+            };
             const char * precapture_env = getenv("GGML_CUDA_AW_PRECAPTURE");
-            const int warmup_passes = precapture_env != nullptr && strcmp(precapture_env, "0") != 0 ? 2 : 0;
+            const bool precapture_requested =
+                    precapture_env != nullptr && strcmp(precapture_env, "0") != 0;
+            const char * precapture_output_env = getenv("GGML_CUDA_AW_PRECAPTURE_OUTPUT");
+            const bool precapture_output =
+                    precapture_output_env != nullptr && strcmp(precapture_output_env, "0") != 0;
+            const int64_t wave_tokens =
+                    backend_ctx->backend_configs[0].nodes[cells.front().expert_end]->ne[1];
+            const int warmup_passes =
+                    precapture_requested && (!return_output || precapture_output) &&
+                    backend_ctx->aw_precaptured_tokens != wave_tokens ? 2 : 0;
+            if (return_output && precapture_requested && !precapture_output) {
+                fprintf(stderr, "AffinityWave: pre-capture disabled while producing output\n");
+            }
             double elapsed_ms = 0.0;
             uint64_t corridor_bytes = 0;
             auto submit_diagonal = [&](int diagonal) -> ggml_status {
@@ -3080,7 +3358,11 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             if (warmup_passes != 0) {
                 fprintf(stderr, "AffinityWave: pre-capturing exact cell graphs with %d untimed wave passes\n",
                         warmup_passes);
+            } else if (precapture_requested && (!return_output || precapture_output) &&
+                    backend_ctx->aw_precaptured_tokens == wave_tokens) {
+                fprintf(stderr, "AffinityWave: reusing pre-captured exact cell graphs\n");
             }
+            const double setup_ms = (ggml_time_us() - dense_begin_us) / 1000.0;
             for (int pass = 0; pass <= warmup_passes; ++pass) {
                 const int64_t pass_begin_us = ggml_time_us();
                 uint64_t pass_corridor_bytes = 0;
@@ -3095,33 +3377,129 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     if (j > 0) {
                         auto & src_config = backend_ctx->backend_configs[j - 1];
                         auto & dst_config = backend_ctx->backend_configs[j];
+                        ggml_backend_meta_affinity_wave_stream_fence(dst_config.backend, false);
+                        if (corridor_early_for(cell)) {
+                            GGML_ASSERT(backend_ctx->aw_corridor_wait(
+                                    src_config.backend, dst_config.backend) == 0);
+                            ggml_backend_meta_affinity_wave_stream_fence(dst_config.backend, true);
+                        } else {
+                        ggml_backend_meta_affinity_wave_stream_fence(src_config.backend, false);
+                        auto corridor_view = [&](size_t lane, ggml_tensor * tensor, bool pinned) {
+                            size_t view_offs = 0;
+                            ggml_tensor * root = tensor;
+                            while (root->view_src != nullptr) {
+                                view_offs += root->view_offs;
+                                root = root->view_src;
+                            }
+                            auto it = std::find_if(input_snapshots[lane].begin(), input_snapshots[lane].end(),
+                                    [&](const input_snapshot & snapshot) { return snapshot.tensor == root; });
+                            ggml_tensor mapped = *tensor;
+                            if (it == input_snapshots[lane].end()) {
+                                if (cell.layer == 0 && j == 1 &&
+                                        getenv("GGML_CUDA_AW_DEBUG_CORRIDOR") != nullptr &&
+                                        strcmp(getenv("GGML_CUDA_AW_DEBUG_CORRIDOR"), "0") != 0) {
+                                    fprintf(stderr,
+                                            "AffinityWave: corridor direct lane=%zu tensor=%s root=%s op=%s bytes=%zu\n",
+                                            lane, tensor->name, root->name, ggml_op_name(root->op), ggml_nbytes(tensor));
+                                }
+                                return mapped;
+                            }
+                            mapped.buffer = pinned ? it->persistent.buffer : root->buffer;
+                            mapped.data = (char *) (pinned ? it->persistent.data : it->original_data) + view_offs;
+                            mapped.view_src = nullptr;
+                            mapped.view_offs = 0;
+                            return mapped;
+                        };
                         auto copy_corridor = [&](ggml_tensor * src, ggml_tensor * dst, bool root) {
                             if (root) {
                                 src = ggml_backend_meta_aw_view_root(src);
                                 dst = ggml_backend_meta_aw_view_root(dst);
+                            }
+                            if (!ggml_are_same_layout(src, dst)) {
+                                fprintf(stderr,
+                                        "AffinityWave: corridor layout mismatch src=%s ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu dst=%s ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu\n",
+                                        src->name,
+                                        (long long) src->ne[0], (long long) src->ne[1],
+                                        (long long) src->ne[2], (long long) src->ne[3],
+                                        src->nb[0], src->nb[1], src->nb[2], src->nb[3],
+                                        dst->name,
+                                        (long long) dst->ne[0], (long long) dst->ne[1],
+                                        (long long) dst->ne[2], (long long) dst->ne[3],
+                                        dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3]);
                             }
                             GGML_ASSERT(ggml_are_same_layout(src, dst));
                             ggml_backend_tensor_copy_async(src_config.backend, dst_config.backend, src, dst);
                             pass_corridor_bytes += ggml_nbytes(dst);
                         };
                         if (cell.recurrent >= 0) {
-                            ggml_tensor * src_conv = src_config.nodes[cell.conv_input]->src[0];
-                            ggml_tensor * dst_conv = dst_config.nodes[cell.conv_input]->src[0];
-                            ggml_tensor * src_state = src_config.nodes[cell.recurrent]->src[5];
-                            ggml_tensor * dst_state = dst_config.nodes[cell.recurrent]->src[5];
-                            copy_corridor(src_conv, dst_conv, false);
-                            copy_corridor(src_state, dst_state, false);
+                            ggml_tensor src_conv = corridor_view(j - 1,
+                                    src_config.nodes[cell.conv_state_update], false);
+                            ggml_tensor dst_conv = corridor_view(j,
+                                    dst_config.nodes[cell.conv_state_clear], true);
+                            ggml_tensor src_state = corridor_view(j - 1,
+                                    src_config.nodes[cell.state_update]->src[1], false);
+                            ggml_tensor dst_state = corridor_view(j,
+                                    dst_config.nodes[cell.state_clear], true);
+                            const bool debug_corridor =
+                                    cell.layer == 0 && j == 1 &&
+                                    getenv("GGML_CUDA_AW_DEBUG_CORRIDOR") != nullptr &&
+                                    strcmp(getenv("GGML_CUDA_AW_DEBUG_CORRIDOR"), "0") != 0;
+                            auto tensor_hash = [](ggml_backend_t backend, const ggml_tensor * tensor) {
+                                ggml_backend_synchronize(backend);
+                                std::vector<uint8_t> data(ggml_nbytes(tensor));
+                                ggml_backend_tensor_get(tensor, data.data(), 0, data.size());
+                                uint64_t hash = 1469598103934665603ULL;
+                                for (uint8_t value : data) {
+                                    hash = (hash ^ value) * 1099511628211ULL;
+                                }
+                                return hash;
+                            };
+                            if (debug_corridor) {
+                                fprintf(stderr,
+                                        "AffinityWave: corridor before conv=%016llx/%016llx state=%016llx/%016llx bytes=%zu/%zu\n",
+                                        (unsigned long long) tensor_hash(src_config.backend, &src_conv),
+                                        (unsigned long long) tensor_hash(dst_config.backend, &dst_conv),
+                                        (unsigned long long) tensor_hash(src_config.backend, &src_state),
+                                        (unsigned long long) tensor_hash(dst_config.backend, &dst_state),
+                                        ggml_nbytes(&src_conv), ggml_nbytes(&src_state));
+                            }
+                            copy_corridor(&src_conv, &dst_conv, false);
+                            copy_corridor(&src_state, &dst_state, false);
+                            if (debug_corridor) {
+                                fprintf(stderr,
+                                        "AffinityWave: corridor after conv=%016llx/%016llx state=%016llx/%016llx\n",
+                                        (unsigned long long) tensor_hash(src_config.backend, &src_conv),
+                                        (unsigned long long) tensor_hash(dst_config.backend, &dst_conv),
+                                        (unsigned long long) tensor_hash(src_config.backend, &src_state),
+                                        (unsigned long long) tensor_hash(dst_config.backend, &dst_state));
+                            }
                         } else {
                             ggml_tensor * src_attn = src_config.nodes[cell.flash_attn];
                             ggml_tensor * dst_attn = dst_config.nodes[cell.flash_attn];
-                            copy_corridor(src_attn->src[1], dst_attn->src[1], true);
-                            copy_corridor(src_attn->src[2], dst_attn->src[2], true);
+                            ggml_tensor src_k = corridor_view(j - 1,
+                                    ggml_backend_meta_aw_view_root(src_attn->src[1]), false);
+                            ggml_tensor dst_k = corridor_view(j,
+                                    ggml_backend_meta_aw_view_root(dst_attn->src[1]), true);
+                            ggml_tensor src_v = corridor_view(j - 1,
+                                    ggml_backend_meta_aw_view_root(src_attn->src[2]), false);
+                            ggml_tensor dst_v = corridor_view(j,
+                                    ggml_backend_meta_aw_view_root(dst_attn->src[2]), true);
+                            copy_corridor(&src_k, &dst_k, false);
+                            copy_corridor(&src_v, &dst_v, false);
+                        }
+                        ggml_backend_meta_affinity_wave_stream_fence(dst_config.backend, true);
                         }
                     }
                     ggml_cgraph * graph = backend_ctx->backend_configs[j].cgraphs[0].cgraph_main;
                     graph->n_nodes = 0;
-                    for (int i = cell.begin; i < cell.expert_begin; ++i) {
-                        graph->nodes[graph->n_nodes++] = backend_ctx->backend_configs[j].nodes[i];
+                    const int pre_end = corridor_state_split_for(cell, j) ?
+                            cell.attention_state_end + 1 : cell.expert_begin;
+                    for (int i = cell.begin; i < pre_end; ++i) {
+                        ggml_tensor * node = backend_ctx->backend_configs[j].nodes[i];
+                        if (j > 0 && (i == cell.conv_state_clear || i == cell.state_clear)) {
+                            continue;
+                        }
+                        graph->nodes[graph->n_nodes++] = node;
                     }
                     if (!fixed_only && !live_service) {
                         for (int i = cell.expert_begin; i <= cell.expert_end; ++i) {
@@ -3142,10 +3520,106 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 if (status != GGML_STATUS_SUCCESS) {
                     return status;
                 }
+                if (corridor_early) {
+                    for (size_t j = 0; j + 1 < n_backends; ++j) {
+                        const int layer = diagonal - lane_stagger*(int) j;
+                        if (layer < 0 || layer >= (int) cells.size()) {
+                            continue;
+                        }
+                        const ggml_backend_meta_aw_cell & cell = cells[layer];
+                        if (!corridor_early_for(cell)) {
+                            continue;
+                        }
+                        auto & src_config = backend_ctx->backend_configs[j];
+                        auto & dst_config = backend_ctx->backend_configs[j + 1];
+                        auto corridor_view = [&](size_t lane, ggml_tensor * tensor, bool pinned) {
+                            size_t view_offs = 0;
+                            ggml_tensor * root = tensor;
+                            while (root->view_src != nullptr) {
+                                view_offs += root->view_offs;
+                                root = root->view_src;
+                            }
+                            auto it = std::find_if(input_snapshots[lane].begin(), input_snapshots[lane].end(),
+                                    [&](const input_snapshot & snapshot) { return snapshot.tensor == root; });
+                            ggml_tensor mapped = *tensor;
+                            if (it == input_snapshots[lane].end()) {
+                                return mapped;
+                            }
+                            mapped.buffer = pinned ? it->persistent.buffer : root->buffer;
+                            mapped.data = (char *) (pinned ? it->persistent.data : it->original_data) + view_offs;
+                            mapped.view_src = nullptr;
+                            mapped.view_offs = 0;
+                            return mapped;
+                        };
+                        auto copy_corridor = [&](ggml_tensor * src, ggml_tensor * dst) {
+                            GGML_ASSERT(ggml_are_same_layout(src, dst));
+                            GGML_ASSERT(backend_ctx->aw_corridor_copy(
+                                    src_config.backend, dst_config.backend, src, dst) == 0);
+                            pass_corridor_bytes += ggml_nbytes(dst);
+                        };
+                        ggml_backend_meta_affinity_wave_stream_fence(src_config.backend, false);
+                        if (cell.recurrent >= 0) {
+                            ggml_tensor src_conv = corridor_view(j,
+                                    src_config.nodes[cell.conv_state_update], false);
+                            ggml_tensor dst_conv = corridor_view(j + 1,
+                                    dst_config.nodes[cell.conv_state_clear], true);
+                            ggml_tensor src_state = corridor_view(j,
+                                    src_config.nodes[cell.state_update]->src[1], false);
+                            ggml_tensor dst_state = corridor_view(j + 1,
+                                    dst_config.nodes[cell.state_clear], true);
+                            copy_corridor(&src_conv, &dst_conv);
+                            copy_corridor(&src_state, &dst_state);
+                        } else {
+                            ggml_tensor * src_attn = src_config.nodes[cell.flash_attn];
+                            ggml_tensor * dst_attn = dst_config.nodes[cell.flash_attn];
+                            ggml_tensor src_k = corridor_view(j,
+                                    ggml_backend_meta_aw_view_root(src_attn->src[1]), false);
+                            ggml_tensor dst_k = corridor_view(j + 1,
+                                    ggml_backend_meta_aw_view_root(dst_attn->src[1]), true);
+                            ggml_tensor src_v = corridor_view(j,
+                                    ggml_backend_meta_aw_view_root(src_attn->src[2]), false);
+                            ggml_tensor dst_v = corridor_view(j + 1,
+                                    ggml_backend_meta_aw_view_root(dst_attn->src[2]), true);
+                            copy_corridor(&src_k, &dst_k);
+                            copy_corridor(&src_v, &dst_v);
+                        }
+                    }
+                }
+                if (corridor_state_split) {
+                    for (size_t j = 0; j < n_backends; ++j) {
+                        const int layer = diagonal - lane_stagger*(int) j;
+                        if (layer < 0 || layer >= (int) cells.size()) {
+                            continue;
+                        }
+                        const ggml_backend_meta_aw_cell & cell = cells[layer];
+                        if (!corridor_state_split_for(cell, j)) {
+                            continue;
+                        }
+                        auto & bcj = backend_ctx->backend_configs[j];
+                        ggml_cgraph * graph = bcj.cgraphs[0].cgraph_main;
+                        graph->n_nodes = 0;
+                        for (int i = cell.attention_state_end + 1; i < cell.expert_begin; ++i) {
+                            graph->nodes[graph->n_nodes++] = bcj.nodes[i];
+                        }
+                        graph->uid = ggml_graph_next_uid();
+                        status = ggml_backend_graph_compute_async(bcj.backend, graph);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            return status;
+                        }
+                    }
+                }
                 if (live_service) {
                     GGML_ASSERT(backend_ctx->aw_live_service != nullptr);
                     std::vector<ggml_backend_meta_aw_live_cell> live_cells;
                     std::vector<ggml_backend_t> simple_backends(n_backends);
+                    struct live_source {
+                        size_t device;
+                        ggml_tensor * input;
+                        ggml_tensor * ids;
+                        ggml_tensor * weights;
+                        ggml_tensor * output;
+                    };
+                    std::vector<live_source> live_sources;
                     for (size_t j = 0; j < n_backends; ++j) {
                         simple_backends[j] = backend_ctx->backend_configs[j].backend;
                         const int layer = diagonal - lane_stagger*(int) j;
@@ -3154,20 +3628,104 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         }
                         const ggml_backend_meta_aw_cell & cell = cells[layer];
                         auto & bcj = backend_ctx->backend_configs[j];
-                        ggml_tensor * gate = bcj.nodes[cell.expert_begin];
-                        ggml_tensor * weighted = bcj.nodes[cell.expert_begin + 4];
+                        ggml_tensor * gate = nullptr;
+                        ggml_tensor * weighted = nullptr;
+                        for (int i = cell.expert_begin; i <= cell.expert_end; ++i) {
+                            ggml_tensor * node = bcj.nodes[i];
+                            if (ggml_backend_meta_aw_name_contains(node, "ffn_moe_gate", layer) &&
+                                    node->op == GGML_OP_MUL_MAT_ID) {
+                                gate = node;
+                            } else if (ggml_backend_meta_aw_name_contains(node, "ffn_moe_weighted", layer) &&
+                                    node->op == GGML_OP_MUL) {
+                                weighted = node;
+                            }
+                        }
+                        GGML_ASSERT(gate != nullptr && weighted != nullptr);
                         ggml_tensor * output = bcj.nodes[cell.expert_end];
                         GGML_ASSERT(gate->op == GGML_OP_MUL_MAT_ID && weighted->op == GGML_OP_MUL);
                         GGML_ASSERT(gate->src[1]->type == GGML_TYPE_F32 && gate->src[2]->type == GGML_TYPE_I32 &&
                                 weighted->src[1]->type == GGML_TYPE_F32 && output->type == GGML_TYPE_F32);
+                        auto route_stride = [&](const ggml_tensor * route) {
+                            if (route->ne[0] == 8 && route->ne[1] == output->ne[1]) {
+                                return route->nb[1];
+                            }
+                            if (route->ne[0] == 1 && route->ne[1] == 8 &&
+                                    route->ne[2] == output->ne[1]) {
+                                return route->nb[2];
+                            }
+                            GGML_ABORT("unexpected AffinityWave route layout");
+                        };
                         live_cells.push_back({
                                 layer, (int32_t) j, (int32_t) output->ne[1], 0,
+                                route_stride(gate->src[2]), route_stride(weighted->src[1]),
                                 (const float *) gate->src[1]->data,
                                 (const int32_t *) gate->src[2]->data,
                                 (const float *) weighted->src[1]->data,
                                 (float *) output->data,
-                                shared_service ? (float *) bcj.nodes[cell.shared_raw]->data : nullptr
+                                shared_service ? (float *) bcj.nodes[cell.shared_raw]->data : nullptr,
+                                nullptr
                         });
+                        live_sources.push_back({j, gate->src[1], gate->src[2], weighted->src[1], output});
+                    }
+                    struct verify_snapshot {
+                        ggml_backend_buffer_ptr buffer;
+                        ggml_tensor tensor;
+                    };
+                    std::vector<verify_snapshot> verify_snapshots;
+                    if (verify_local) {
+                        verify_snapshots.reserve(live_cells.size()*4);
+                        auto snapshot_tensor = [&](size_t device, const ggml_tensor * src) -> void * {
+                            ggml_backend_t backend = simple_backends[device];
+                            ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backend);
+                            verify_snapshots.emplace_back();
+                            verify_snapshot & snapshot = verify_snapshots.back();
+                            snapshot.buffer.reset(ggml_backend_buft_alloc_buffer(
+                                        buft, ggml_backend_buft_get_alloc_size(buft, src)));
+                            GGML_ASSERT(snapshot.buffer != nullptr);
+                            snapshot.tensor = *src;
+                            snapshot.tensor.buffer = snapshot.buffer.get();
+                            snapshot.tensor.data = ggml_backend_buffer_get_base(snapshot.buffer.get());
+                            snapshot.tensor.view_src = nullptr;
+                            snapshot.tensor.view_offs = 0;
+                            ggml_backend_tensor_copy_async(backend, backend, src, &snapshot.tensor);
+                            return snapshot.tensor.data;
+                        };
+                        for (size_t i = 0; i < live_cells.size(); ++i) {
+                            const live_source & source = live_sources[i];
+                            live_cells[i].input = (const float *) snapshot_tensor(source.device, source.input);
+                            live_cells[i].ids = (const int32_t *) snapshot_tensor(source.device, source.ids);
+                            live_cells[i].weights = (const float *) snapshot_tensor(source.device, source.weights);
+                        }
+                        for (size_t j = 0; j < n_backends; ++j) {
+                            ggml_backend_synchronize(simple_backends[j]);
+                        }
+                        for (size_t j = 0; j < n_backends; ++j) {
+                            const int layer = diagonal - lane_stagger*(int) j;
+                            if (layer < 0 || layer >= (int) cells.size()) {
+                                continue;
+                            }
+                            const ggml_backend_meta_aw_cell & cell = cells[layer];
+                            ggml_cgraph * graph = backend_ctx->backend_configs[j].cgraphs[0].cgraph_main;
+                            graph->n_nodes = 0;
+                            for (int i = cell.expert_begin; i <= cell.expert_end; ++i) {
+                                graph->nodes[graph->n_nodes++] = backend_ctx->backend_configs[j].nodes[i];
+                            }
+                            graph->uid = ggml_graph_next_uid();
+                        }
+                        status = submit_diagonal(diagonal);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            return status;
+                        }
+                        for (size_t j = 0; j < n_backends; ++j) {
+                            ggml_backend_synchronize(simple_backends[j]);
+                        }
+                        for (size_t i = 0; i < live_cells.size(); ++i) {
+                            const live_source & source = live_sources[i];
+                            live_cells[i].reference = (const float *) snapshot_tensor(source.device, source.output);
+                        }
+                        for (size_t j = 0; j < n_backends; ++j) {
+                            ggml_backend_synchronize(simple_backends[j]);
+                        }
                     }
                     char service_error[256] = {};
                     if (backend_ctx->aw_live_service(simple_backends.data(), live_cells.data(),
@@ -3202,6 +3760,12 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         return status;
                     }
                 }
+                if (getenv("GGML_CUDA_AW_SYNC_DIAGONAL") != nullptr &&
+                        strcmp(getenv("GGML_CUDA_AW_SYNC_DIAGONAL"), "0") != 0) {
+                    for (size_t j = 0; j < n_backends; ++j) {
+                        ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+                    }
+                }
                 }
                 for (size_t j = 0; j < n_backends; ++j) {
                     ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
@@ -3211,12 +3775,119 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     corridor_bytes = pass_corridor_bytes;
                 }
             }
-            fprintf(stderr, "AffinityWave: dense lane microbench mode=%s tokens=%lld cells=%zu corridors=%.1f MiB elapsed=%.3f ms projected=%.1f tok/s; output withheld\n",
+            if (warmup_passes != 0) {
+                backend_ctx->aw_precaptured_tokens = wave_tokens;
+            }
+            double tail_ms = 0.0;
+            if (return_output) {
+                const int64_t tail_begin_us = ggml_time_us();
+                int result_norm = -1;
+                for (int i = cells.back().end + 1; i < cgraph->n_nodes; ++i) {
+                    if (strcmp(cgraph->nodes[i]->name, "result_norm") == 0) {
+                        result_norm = i;
+                        break;
+                    }
+                }
+                GGML_ASSERT(result_norm > cells.back().end + 1 && result_norm + 1 < cgraph->n_nodes);
+
+                auto submit_tail_range = [&](int begin, int end) -> ggml_status {
+                    for (size_t j = 0; j < n_backends; ++j) {
+                        auto & bcj = backend_ctx->backend_configs[j];
+                        ggml_cgraph * graph = bcj.cgraphs[0].cgraph_main;
+                        graph->n_nodes = 0;
+                        for (int i = begin; i < end; ++i) {
+                            graph->nodes[graph->n_nodes++] = bcj.nodes[i];
+                        }
+                        graph->uid = ggml_graph_next_uid();
+                    }
+                    const std::function<ggml_status(size_t)> tail_job = [&](size_t j) -> ggml_status {
+                        auto & bcj = backend_ctx->backend_configs[j];
+                        return ggml_backend_graph_compute_async(bcj.backend, bcj.cgraphs[0].cgraph_main);
+                    };
+                    auto & pool = *backend_ctx->submit;
+                    {
+                        std::lock_guard<std::mutex> lock(pool.m);
+                        pool.spmd_job = &tail_job;
+                        pool.n_pending = n_backends - 1;
+                        pool.seq++;
+                    }
+                    pool.cv_go.notify_all();
+                    const ggml_status status0 = tail_job(0);
+                    {
+                        std::unique_lock<std::mutex> lock(pool.m);
+                        pool.cv_done.wait(lock, [&]() { return pool.n_pending == 0; });
+                        pool.spmd_job = nullptr;
+                    }
+                    if (status0 != GGML_STATUS_SUCCESS) {
+                        return status0;
+                    }
+                    for (size_t w = 0; w < n_backends - 1; ++w) {
+                        if (pool.slots[w].status != GGML_STATUS_SUCCESS) {
+                            return pool.slots[w].status;
+                        }
+                    }
+                    for (size_t j = 0; j < n_backends; ++j) {
+                        ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+                    }
+                    return GGML_STATUS_SUCCESS;
+                };
+
+                ggml_status status = submit_tail_range(cells.back().end + 1, result_norm);
+                if (status != GGML_STATUS_SUCCESS) {
+                    return status;
+                }
+
+                int64_t output_row = 0;
+                for (size_t src_device = 0; src_device < n_backends; ++src_device) {
+                    auto & src_config = backend_ctx->backend_configs[src_device];
+                    ggml_tensor * src_result = src_config.nodes[result_norm];
+                    ggml_tensor * src_hidden = src_result->src[0];
+                    ggml_tensor * src_ids = src_result->src[1];
+                    const int64_t rows = src_ids->ne[0];
+                    if (rows == 0) {
+                        continue;
+                    }
+                    GGML_ASSERT(rows <= src_hidden->ne[1]);
+                    ggml_tensor src_view = *src_hidden;
+                    src_view.ne[1] = rows;
+                    src_view.data = (char *) src_hidden->data + (src_hidden->ne[1] - rows)*src_hidden->nb[1];
+                    for (int dim = 2; dim < GGML_MAX_DIMS; ++dim) {
+                        src_view.nb[dim] = src_view.nb[dim - 1]*src_view.ne[dim - 1];
+                    }
+                    for (size_t dst_device = 0; dst_device < n_backends; ++dst_device) {
+                        auto & dst_config = backend_ctx->backend_configs[dst_device];
+                        ggml_tensor * dst_result = dst_config.nodes[result_norm];
+                        GGML_ASSERT(dst_result->ne[1] == cgraph->nodes[result_norm]->ne[1]);
+                        ggml_tensor dst_view = *dst_result;
+                        dst_view.ne[1] = rows;
+                        dst_view.data = (char *) dst_result->data + output_row*dst_result->nb[1];
+                        for (int dim = 2; dim < GGML_MAX_DIMS; ++dim) {
+                            dst_view.nb[dim] = dst_view.nb[dim - 1]*dst_view.ne[dim - 1];
+                        }
+                        ggml_backend_tensor_copy_async(
+                                src_config.backend, dst_config.backend, &src_view, &dst_view);
+                    }
+                    output_row += rows;
+                }
+                GGML_ASSERT(output_row == cgraph->nodes[result_norm]->ne[1]);
+                for (size_t j = 0; j < n_backends; ++j) {
+                    ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+                }
+
+                status = submit_tail_range(result_norm + 1, cgraph->n_nodes);
+                if (status != GGML_STATUS_SUCCESS) {
+                    return status;
+                }
+                tail_ms = (ggml_time_us() - tail_begin_us) / 1000.0;
+            }
+            fprintf(stderr, "AffinityWave: dense lane mode=%s tokens=%lld cells=%zu corridors=%.1f MiB setup=%.3f ms wave=%.3f ms tail=%.3f ms total=%.3f ms throughput=%.1f tok/s; output=%s\n",
                     fixed_only ? "fixed" : (live_service ? "service" : "local-expert"),
                     (long long) cgraph->nodes[cells[0].end]->ne[1], cells.size()*n_backends,
-                    corridor_bytes/(1024.0*1024.0), elapsed_ms,
-                    cgraph->nodes[cells[0].end]->ne[1] * 1000.0 / elapsed_ms);
-            return GGML_STATUS_ABORTED;
+                    corridor_bytes/(1024.0*1024.0), setup_ms, elapsed_ms, tail_ms,
+                    setup_ms + elapsed_ms + tail_ms,
+                    cgraph->nodes[cells[0].end]->ne[1] * 1000.0 / (setup_ms + elapsed_ms + tail_ms),
+                    return_output ? "logits" : "withheld");
+            return return_output ? GGML_STATUS_SUCCESS : GGML_STATUS_ABORTED;
         }
     }
 

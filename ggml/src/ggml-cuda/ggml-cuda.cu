@@ -610,6 +610,11 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     if (copy_event != nullptr) {
         CUDA_CHECK(cudaEventDestroy(copy_event));
     }
+    for (cudaEvent_t event : affinity_wave_join_events) {
+        if (event != nullptr) {
+            CUDA_CHECK(cudaEventDestroy(event));
+        }
+    }
     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
             if (streams[i][j] != nullptr) {
@@ -4043,6 +4048,95 @@ static void ggml_backend_cuda_affinity_wave_repack_tensor_async(
     ggml_cuda_affinity_wave_repack_uploaded_tensor_async(tensor, true, (void *) cuda_ctx->stream());
 }
 
+static void ggml_backend_cuda_affinity_wave_stream_fence(ggml_backend_t backend, bool broadcast) {
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(cuda_ctx->device);
+    cudaStream_t stream = cuda_ctx->stream(cuda_ctx->device, 0);
+    if (!broadcast) {
+        for (int stream_no = 1; stream_no < GGML_CUDA_MAX_STREAMS; ++stream_no) {
+            cudaStream_t concurrent_stream = cuda_ctx->streams[cuda_ctx->device][stream_no];
+            if (concurrent_stream == nullptr) {
+                continue;
+            }
+            cudaEvent_t & event = cuda_ctx->affinity_wave_join_events[stream_no];
+            if (event == nullptr) {
+                CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+            }
+            CUDA_CHECK(cudaEventRecord(event, concurrent_stream));
+            CUDA_CHECK(cudaStreamWaitEvent(stream, event));
+        }
+        cuda_ctx->curr_stream_no = 0;
+        return;
+    }
+
+    cudaEvent_t & event = cuda_ctx->affinity_wave_join_events[0];
+    if (event == nullptr) {
+        CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+    }
+    CUDA_CHECK(cudaEventRecord(event, stream));
+    for (int stream_no = 1; stream_no < GGML_CUDA_MAX_STREAMS; ++stream_no) {
+        cudaStream_t concurrent_stream = cuda_ctx->streams[cuda_ctx->device][stream_no];
+        if (concurrent_stream != nullptr) {
+            CUDA_CHECK(cudaStreamWaitEvent(concurrent_stream, event));
+        }
+    }
+}
+
+struct ggml_cuda_aw_corridor_channel {
+    cudaStream_t stream       = nullptr;
+    cudaEvent_t  source_ready = nullptr;
+    cudaEvent_t  copy_done    = nullptr;
+};
+
+static ggml_cuda_aw_corridor_channel ggml_cuda_aw_corridors[GGML_CUDA_MAX_DEVICES];
+
+static ggml_cuda_aw_corridor_channel & ggml_backend_cuda_aw_corridor_channel(int device) {
+    ggml_cuda_aw_corridor_channel & channel = ggml_cuda_aw_corridors[device];
+    if (channel.stream == nullptr) {
+        ggml_cuda_set_device(device);
+        CUDA_CHECK(cudaStreamCreateWithFlags(&channel.stream, cudaStreamNonBlocking));
+        CUDA_CHECK(cudaEventCreateWithFlags(&channel.source_ready, cudaEventDisableTiming));
+        CUDA_CHECK(cudaEventCreateWithFlags(&channel.copy_done, cudaEventDisableTiming));
+    }
+    return channel;
+}
+
+static int ggml_backend_cuda_affinity_wave_corridor_copy(
+        ggml_backend_t backend_src,
+        ggml_backend_t backend_dst,
+        const ggml_tensor * src,
+        ggml_tensor * dst) {
+    GGML_ASSERT(ggml_backend_is_cuda(backend_src) && ggml_backend_is_cuda(backend_dst));
+    GGML_ASSERT(ggml_are_same_layout(src, dst));
+    ggml_backend_cuda_context * src_ctx = (ggml_backend_cuda_context *) backend_src->context;
+    ggml_backend_cuda_context * dst_ctx = (ggml_backend_cuda_context *) backend_dst->context;
+    GGML_ASSERT(src_ctx->device != dst_ctx->device);
+    ggml_cuda_aw_corridor_channel & channel =
+            ggml_backend_cuda_aw_corridor_channel(src_ctx->device);
+    ggml_cuda_set_device(src_ctx->device);
+    CUDA_CHECK(cudaEventRecord(channel.source_ready, src_ctx->stream()));
+    CUDA_CHECK(cudaStreamWaitEvent(channel.stream, channel.source_ready, 0));
+    CUDA_CHECK(cudaMemcpyPeerAsync(
+            dst->data, dst_ctx->device, src->data, src_ctx->device,
+            ggml_nbytes(dst), channel.stream));
+    CUDA_CHECK(cudaEventRecord(channel.copy_done, channel.stream));
+    return 0;
+}
+
+static int ggml_backend_cuda_affinity_wave_corridor_wait(
+        ggml_backend_t backend_src,
+        ggml_backend_t backend_dst) {
+    GGML_ASSERT(ggml_backend_is_cuda(backend_src) && ggml_backend_is_cuda(backend_dst));
+    ggml_backend_cuda_context * src_ctx = (ggml_backend_cuda_context *) backend_src->context;
+    ggml_backend_cuda_context * dst_ctx = (ggml_backend_cuda_context *) backend_dst->context;
+    GGML_ASSERT(src_ctx->device != dst_ctx->device);
+    ggml_cuda_aw_corridor_channel & channel =
+            ggml_backend_cuda_aw_corridor_channel(src_ctx->device);
+    ggml_cuda_set_device(dst_ctx->device);
+    CUDA_CHECK(cudaStreamWaitEvent(dst_ctx->stream(), channel.copy_done, 0));
+    return 0;
+}
+
 static int ggml_backend_cuda_affinity_wave_live_service(
         ggml_backend_t const * backends,
         const ggml_cuda_aw_live_cell * cells,
@@ -4054,9 +4148,44 @@ static int ggml_backend_cuda_affinity_wave_live_service(
         GGML_ASSERT(ggml_backend_is_cuda(backends[device]));
         ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backends[device]->context;
         GGML_ASSERT(cuda_ctx->device == device);
-        streams[device] = (void *) cuda_ctx->stream();
+        ggml_cuda_set_device(device);
+        cudaStream_t stream = cuda_ctx->stream(device, 0);
+        for (int stream_no = 1; stream_no < GGML_CUDA_MAX_STREAMS; ++stream_no) {
+            cudaStream_t concurrent_stream = cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream == nullptr) {
+                continue;
+            }
+            cudaEvent_t & event = cuda_ctx->affinity_wave_join_events[stream_no];
+            if (event == nullptr) {
+                CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+            }
+            CUDA_CHECK(cudaEventRecord(event, concurrent_stream));
+            CUDA_CHECK(cudaStreamWaitEvent(stream, event));
+        }
+        cuda_ctx->curr_stream_no = 0;
+        streams[device] = (void *) stream;
     }
-    return ggml_cuda_affinity_wave_live_service(streams, cells, n_cells, error, error_capacity);
+    const int result = ggml_cuda_affinity_wave_live_service(streams, cells, n_cells, error, error_capacity);
+    if (result != 0) {
+        return result;
+    }
+    for (int device = 0; device < 4; ++device) {
+        ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backends[device]->context;
+        ggml_cuda_set_device(device);
+        cudaStream_t stream = cuda_ctx->stream(device, 0);
+        cudaEvent_t & event = cuda_ctx->affinity_wave_join_events[0];
+        if (event == nullptr) {
+            CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        }
+        CUDA_CHECK(cudaEventRecord(event, stream));
+        for (int stream_no = 1; stream_no < GGML_CUDA_MAX_STREAMS; ++stream_no) {
+            cudaStream_t concurrent_stream = cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream != nullptr) {
+                CUDA_CHECK(cudaStreamWaitEvent(concurrent_stream, event));
+            }
+        }
+    }
+    return 0;
 }
 
 static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data,
@@ -4908,7 +5037,9 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 // try and fuse nodes and return the number of nodes to skip
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
-    static bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
+    static bool disable_fusion =
+            (getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"))) ||
+            (getenv("GGML_CUDA_ACTIVATION_DUMP") != nullptr && getenv("GGML_CUDA_ACTIVATION_DUMP")[0] != '\0');
     if (disable_fusion) {
         return 0;
     }
@@ -5337,6 +5468,53 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     return 0;
 }
 
+static void ggml_cuda_dump_activation(ggml_backend_cuda_context * cuda_ctx, const ggml_tensor * tensor) {
+    const char * directory = getenv("GGML_CUDA_ACTIVATION_DUMP");
+    if (directory == nullptr || directory[0] == '\0') {
+        return;
+    }
+    const char * filter = getenv("GGML_CUDA_ACTIVATION_FILTER");
+    bool selected = filter == nullptr || filter[0] == '\0' ?
+            strncmp(tensor->name, "l_out-", 6) == 0 : false;
+    for (const char * begin = filter; !selected && begin != nullptr && begin[0] != '\0'; ) {
+        const char * end = strchr(begin, ',');
+        const size_t length = end != nullptr ? (size_t) (end - begin) : strlen(begin);
+        selected = strlen(tensor->name) == length && strncmp(tensor->name, begin, length) == 0;
+        begin = end != nullptr ? end + 1 : nullptr;
+    }
+    if (!selected || tensor->type != GGML_TYPE_F32 || !ggml_is_contiguous(tensor)) {
+        return;
+    }
+    const bool wave = getenv("GGML_CUDA_AW_WAVE_TOKEN_SPLIT") != nullptr &&
+            strcmp(getenv("GGML_CUDA_AW_WAVE_TOKEN_SPLIT"), "0") != 0;
+    const bool all_devices = getenv("GGML_CUDA_ACTIVATION_ALL_DEVICES") != nullptr &&
+            strcmp(getenv("GGML_CUDA_ACTIVATION_ALL_DEVICES"), "0") != 0;
+    if (!wave && !all_devices && cuda_ctx->device != 0) {
+        return;
+    }
+    CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+    std::vector<float> data(ggml_nelements(tensor));
+    CUDA_CHECK(cudaMemcpy(data.data(), tensor->data, ggml_nbytes(tensor), cudaMemcpyDeviceToHost));
+
+    char path[1024];
+    const int length = snprintf(path, sizeof(path), "%s/d%d-%s.bin",
+            directory, cuda_ctx->device, tensor->name);
+    GGML_ASSERT(length > 0 && (size_t) length < sizeof(path));
+    FILE * file = fopen(path, "wb");
+    GGML_ASSERT(file != nullptr);
+    const uint64_t header[6] = {
+        UINT64_C(0x4157414354495631),
+        (uint64_t) tensor->ne[0],
+        (uint64_t) tensor->ne[1],
+        (uint64_t) tensor->ne[2],
+        (uint64_t) tensor->ne[3],
+        (uint64_t) tensor->type,
+    };
+    GGML_ASSERT(fwrite(header, sizeof(header), 1, file) == 1);
+    GGML_ASSERT(fwrite(data.data(), sizeof(float), data.size(), file) == data.size());
+    GGML_ASSERT(fclose(file) == 0);
+}
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
 
@@ -5512,6 +5690,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
                 GGML_ASSERT(ok);
+                ggml_cuda_dump_activation(cuda_ctx, node);
 
                 if (!is_concurrent_event_active) {
                     try_launch_concurrent_event(node);
@@ -5559,6 +5738,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 #ifdef USE_CUDA_GRAPH
 static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, const void * graph_key) {
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+    if (getenv("GGML_CUDA_ACTIVATION_DUMP") != nullptr &&
+            getenv("GGML_CUDA_ACTIVATION_DUMP")[0] != '\0') {
+        graph->disable_due_to_gpu_arch = true;
+        return false;
+    }
 
     if (graph->graph == nullptr) {
         if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_AMPERE) {
@@ -6792,8 +6976,17 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_repack_tensor_async") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_repack_tensor_async;
     }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_stream_fence") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_stream_fence;
+    }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_live_service") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_live_service;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_corridor_copy") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_corridor_copy;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_corridor_wait") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_corridor_wait;
     }
     if (strcmp(name, "ggml_backend_tbo_begin_eval") == 0) {
         return (void *)ggml_backend_cuda_tbo_begin_eval;

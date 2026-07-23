@@ -27,6 +27,10 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef GGML_USE_NCCL
+#include <nccl.h>
+#endif
+
 namespace {
 
 constexpr int AW_GPU_COUNT             = 4;
@@ -46,6 +50,7 @@ struct aw_config {
     std::string map;
     std::string wire;
     std::string q8_layout;
+    std::string q8_kernel;
     std::string home;
     std::string gguf_sha256;
     int down_cache = 0;
@@ -55,14 +60,22 @@ struct aw_config {
 
 class aw_process_barrier {
 public:
-    bool arrive_and_wait() {
+    bool arrive_and_wait(int participants) {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (broken_) {
+        if (broken_ || participants < 1 || participants > AW_GPU_COUNT) {
             return false;
         }
         const int generation = generation_;
-        if (++arrived_ == AW_GPU_COUNT) {
+        if (arrived_ == 0) {
+            participants_ = participants;
+        } else if (participants_ != participants) {
+            broken_ = true;
+            condition_.notify_all();
+            return false;
+        }
+        if (++arrived_ == participants_) {
             arrived_ = 0;
+            participants_ = 0;
             ++generation_;
             condition_.notify_all();
             return true;
@@ -82,6 +95,7 @@ private:
     std::condition_variable condition_;
     int arrived_ = 0;
     int generation_ = 0;
+    int participants_ = 0;
     bool broken_ = false;
 };
 
@@ -89,6 +103,7 @@ static aw_process_barrier aw_bench_barrier;
 static std::mutex aw_layout_mutex;
 static std::unordered_set<const void *> aw_t64_tensors;
 static std::array<std::atomic<int>, AW_GPU_COUNT> aw_t64_tensor_counts{};
+static std::array<int, AW_GPU_COUNT> aw_sm_counts{};
 
 struct aw_layout_entry {
     void * data;
@@ -113,6 +128,11 @@ enum aw_projection {
 
 static bool aw_env_on(const char * value) {
     return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool aw_q8_interleave_enabled() {
+    const char * value = getenv("GGML_CUDA_AW_Q8_KERNEL");
+    return value != nullptr && strcmp(value, "interleave") == 0;
 }
 
 static bool aw_find_value(const std::string & text, const char * key, size_t & value_pos, std::string & error) {
@@ -357,6 +377,8 @@ static bool aw_load_config(aw_config & config, std::string & error) {
     config.wire = getenv("GGML_CUDA_AW_WIRE") != nullptr ? getenv("GGML_CUDA_AW_WIRE") : "f32";
     config.q8_layout = getenv("GGML_CUDA_AW_Q8_LAYOUT") != nullptr ?
             getenv("GGML_CUDA_AW_Q8_LAYOUT") : "native";
+    config.q8_kernel = getenv("GGML_CUDA_AW_Q8_KERNEL") != nullptr ?
+            getenv("GGML_CUDA_AW_Q8_KERNEL") : "cuda";
     config.home = getenv("GGML_CUDA_AW_HOME") != nullptr ? getenv("GGML_CUDA_AW_HOME") : "chunk";
     config.check = aw_env_on(getenv("GGML_CUDA_AW_CHECK"));
     if (config.wire != "f32" && config.wire != "bf16") {
@@ -365,6 +387,14 @@ static bool aw_load_config(aw_config & config, std::string & error) {
     }
     if (config.q8_layout != "native" && config.q8_layout != "t64k32") {
         error = "GGML_CUDA_AW_Q8_LAYOUT must be 'native' or 't64k32'";
+        return false;
+    }
+    if (config.q8_kernel != "cuda" && config.q8_kernel != "interleave") {
+        error = "GGML_CUDA_AW_Q8_KERNEL must be 'cuda' or 'interleave'";
+        return false;
+    }
+    if (config.q8_kernel == "interleave" && config.q8_layout != "t64k32") {
+        error = "GGML_CUDA_AW_Q8_KERNEL=interleave requires GGML_CUDA_AW_Q8_LAYOUT=t64k32";
         return false;
     }
     if (config.home != "chunk" && config.home != "layer") {
@@ -395,6 +425,14 @@ static bool aw_load_config(aw_config & config, std::string & error) {
         }
         config.m64_split = (int) value;
     }
+    if (config.q8_kernel == "interleave" && config.m64_split != 2) {
+        error = "GGML_CUDA_AW_Q8_KERNEL=interleave requires GGML_CUDA_AW_M64_SPLIT=2";
+        return false;
+    }
+    if (config.q8_kernel == "interleave" && aw_env_on(getenv("GGML_CUDA_AW_FUSED_GATE_UP"))) {
+        error = "GGML_CUDA_AW_Q8_KERNEL=interleave does not support GGML_CUDA_AW_FUSED_GATE_UP";
+        return false;
+    }
     if (!aw_validate_manifest(config.map, config, error)) {
         return false;
     }
@@ -420,6 +458,7 @@ static bool aw_load_config(aw_config & config, std::string & error) {
             error = "AffinityWave Phase 1 is restricted to four compute-capability 6.0 GPUs";
             return false;
         }
+        aw_sm_counts[device] = prop.multiProcessorCount;
     }
     return true;
 }
@@ -487,7 +526,7 @@ __device__ __forceinline__ void aw_load_bf16x8(
 // input/weight/output pointers and (layer, expert, row-offset) identity; a
 // projection launch therefore pools all active diagonal cells without making
 // tensor addresses layer-global.
-template<bool BF16_INPUT, bool T64_LAYOUT>
+template<bool BF16_INPUT, bool T64_LAYOUT, bool INTERLEAVE = false>
 __global__ __launch_bounds__(128, 2)
 static void aw_q8_service_m32(
         const aw_work_desc * __restrict__ descs,
@@ -573,19 +612,25 @@ static void aw_q8_service_m32(
                 pq1[i] = *(const unsigned short *) (p1 + 2 + b_k + 2*i);
             }
         };
-        auto stage_data = [&](int buffer) {
+        auto stage_a_part = [&](int buffer, int i) {
             float * fA = (float *) sm.stage.A[buffer];
-            float * fB = (float *) sm.stage.B[buffer];
             const float * a0 = (const float *) &pa0;
             const float * a1 = (const float *) &pa1;
+            fA[(a_k + i    )*32 + aoff] = a0[i];
+            fA[(a_k + i + 4)*32 + aoff] = a1[i];
+        };
+        auto stage_b_part = [&](int buffer, int i) {
+            float * fB = (float *) sm.stage.B[buffer];
+            fB[(b_k + 2*i    )*64 + boff0] = (float) (signed char) (pq0[i] & 0xff)*pd0;
+            fB[(b_k + 2*i + 1)*64 + boff0] = (float) (signed char) (pq0[i] >> 8  )*pd0;
+            fB[(b_k + 2*i    )*64 + boff1] = (float) (signed char) (pq1[i] & 0xff)*pd1;
+            fB[(b_k + 2*i + 1)*64 + boff1] = (float) (signed char) (pq1[i] >> 8  )*pd1;
+        };
+        auto stage_data = [&](int buffer) {
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
-                fA[(a_k + i    )*32 + aoff] = a0[i];
-                fA[(a_k + i + 4)*32 + aoff] = a1[i];
-                fB[(b_k + 2*i    )*64 + boff0] = (float) (signed char) (pq0[i] & 0xff)*pd0;
-                fB[(b_k + 2*i + 1)*64 + boff0] = (float) (signed char) (pq0[i] >> 8  )*pd0;
-                fB[(b_k + 2*i    )*64 + boff1] = (float) (signed char) (pq1[i] & 0xff)*pd1;
-                fB[(b_k + 2*i + 1)*64 + boff1] = (float) (signed char) (pq1[i] >> 8  )*pd1;
+                stage_a_part(buffer, i);
+                stage_b_part(buffer, i);
             }
         };
 
@@ -626,9 +671,21 @@ static void aw_q8_service_m32(
                         acc[i][j] += av[i]*bv[j];
                     }
                 }
+                if constexpr (INTERLEAVE) {
+                    if ((kk & 1) != 0) {
+                        stage_b_part(buffer ^ 1, kk >> 1);
+                    }
+                }
             }
             if (!last) {
-                stage_data(buffer ^ 1);
+                if constexpr (INTERLEAVE) {
+                    #pragma unroll
+                    for (int i = 0; i < 4; ++i) {
+                        stage_a_part(buffer ^ 1, i);
+                    }
+                } else {
+                    stage_data(buffer ^ 1);
+                }
             }
             __syncthreads();
             buffer ^= 1;
@@ -666,7 +723,8 @@ union aw_smem_m64 {
     float red[AW_T64_ROWS][AW_T64_ROWS];
 };
 
-template<bool BF16_INPUT, bool T64_LAYOUT, bool F32_WEIGHT = false, int SPLIT_K = 2>
+template<bool BF16_INPUT, bool T64_LAYOUT, bool F32_WEIGHT = false, int SPLIT_K = 2,
+        bool INTERLEAVE = false>
 __global__ __launch_bounds__(256, 2)
 static void aw_q8_service_m64(
         const aw_work_desc * __restrict__ descs,
@@ -736,22 +794,28 @@ static void aw_q8_service_m64(
                 pq[i] = *(const unsigned short *) (p + b_k + 2*i);
             }
         };
-        auto stage_data = [&](int buffer) {
+        auto stage_a_part = [&](int buffer, int i) {
             const float * a0 = (const float *) &pa0;
             const float * a1 = (const float *) &pa1;
+            sm.stage.A[buffer][a_k + i][a_r] = a0[i];
+            sm.stage.A[buffer][a_k + i + 4][a_r] = a1[i];
+        };
+        auto stage_b_part = [&](int buffer, int i) {
             const float * b0 = (const float *) &pb0;
             const float * b1 = (const float *) &pb1;
+            if constexpr (F32_WEIGHT) {
+                sm.stage.B[buffer][b_k + i][b_r] = b0[i];
+                sm.stage.B[buffer][b_k + i + 4][b_r] = b1[i];
+            } else {
+                sm.stage.B[buffer][b_k + 2*i][b_r] = (float) (signed char) (pq[i] & 0xff)*pd;
+                sm.stage.B[buffer][b_k + 2*i + 1][b_r] = (float) (signed char) (pq[i] >> 8)*pd;
+            }
+        };
+        auto stage_data = [&](int buffer) {
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
-                sm.stage.A[buffer][a_k + i][a_r] = a0[i];
-                sm.stage.A[buffer][a_k + i + 4][a_r] = a1[i];
-                if constexpr (F32_WEIGHT) {
-                    sm.stage.B[buffer][b_k + i][b_r] = b0[i];
-                    sm.stage.B[buffer][b_k + i + 4][b_r] = b1[i];
-                } else {
-                    sm.stage.B[buffer][b_k + 2*i][b_r] = (float) (signed char) (pq[i] & 0xff)*pd;
-                    sm.stage.B[buffer][b_k + 2*i + 1][b_r] = (float) (signed char) (pq[i] >> 8)*pd;
-                }
+                stage_a_part(buffer, i);
+                stage_b_part(buffer, i);
             }
         };
 
@@ -802,10 +866,23 @@ static void aw_q8_service_m64(
                             acc[i][j] += a[i]*b[j];
                         }
                     }
+                    if constexpr (INTERLEAVE) {
+                        static_assert(SPLIT_K == 2);
+                        if ((kk & 3) == 3) {
+                            stage_b_part(buffer ^ 1, kk >> 2);
+                        }
+                    }
                 }
             }
             if (!last) {
-                stage_data(buffer ^ 1);
+                if constexpr (INTERLEAVE) {
+                    #pragma unroll
+                    for (int i = 0; i < 4; ++i) {
+                        stage_a_part(buffer ^ 1, i);
+                    }
+                } else {
+                    stage_data(buffer ^ 1);
+                }
             }
             __syncthreads();
             buffer ^= 1;
@@ -1381,34 +1458,72 @@ __global__ static void aw_live_build_shared_plan(
     }
 }
 
-__global__ static void aw_live_fill_routes(
+__global__ static void aw_live_fill_routes_deterministic(
         const int32_t * ids,
-        int32_t * cursors,
+        const int32_t * offsets,
         int32_t * route_input,
         int32_t * token_routes,
-        int total_slots,
+        int descriptors,
         int owner,
         int tokens) {
-    for (int slot = blockIdx.x*blockDim.x + threadIdx.x; slot < total_slots;
-            slot += gridDim.x*blockDim.x) {
-        const int cell = slot/(tokens*8);
-        const int token = (slot/8) % tokens;
-        const int expert = ids[slot];
-        if (expert >= owner*AW_PRIMARY_PER_GPU && expert < (owner + 1)*AW_PRIMARY_PER_GPU) {
-            const int desc = cell*AW_PRIMARY_PER_GPU + expert % AW_PRIMARY_PER_GPU;
-            const int row = atomicAdd(&cursors[desc], 1);
+    const int desc = blockIdx.x;
+    if (desc >= descriptors) {
+        return;
+    }
+
+    __shared__ int warp_rows[8];
+    __shared__ int row_end;
+
+    const int tid = threadIdx.x;
+    const int warp = tid/32;
+    const int lane = tid%32;
+    const int cell = desc/AW_PRIMARY_PER_GPU;
+    const int expert = owner*AW_PRIMARY_PER_GPU + desc % AW_PRIMARY_PER_GPU;
+    const int slot_begin = cell*tokens*8;
+    const int slot_end = slot_begin + tokens*8;
+
+    if (tid == 0) {
+        row_end = offsets[desc];
+    }
+    __syncthreads();
+
+    for (int base = slot_begin; base < slot_end; base += blockDim.x) {
+        const int slot = base + tid;
+        const bool match = slot < slot_end && ids[slot] == expert;
+        const unsigned int matches = __ballot_sync(0xffffffffu, match);
+        if (lane == 0) {
+            warp_rows[warp] = __popc(matches);
+        }
+        __syncthreads();
+        if (tid == 0) {
+            int row = row_end;
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                const int count = warp_rows[i];
+                warp_rows[i] = row;
+                row += count;
+            }
+            row_end = row;
+        }
+        __syncthreads();
+        if (match) {
+            const unsigned int lane_mask = lane == 0 ? 0u : (1u << lane) - 1u;
+            const int row = warp_rows[warp] + __popc(matches & lane_mask);
+            const int token = (slot/8) % tokens;
             route_input[row] = cell*tokens + token;
             token_routes[slot] = row;
         }
+        __syncthreads();
     }
 }
 
+template <bool BF16>
 __global__ static void aw_live_owner_reduce(
         const float * routes,
         const int32_t * ids,
         const int32_t * token_routes,
         const float * route_weights,
-        uint16_t * partial,
+        void * partial,
         int total_tokens,
         int owner) {
     const size_t count = (size_t) total_tokens*AW_EMBD;
@@ -1425,7 +1540,11 @@ __global__ static void aw_live_owner_reduce(
                 sum += route_weights[slot]*routes[(size_t) token_routes[slot]*AW_EMBD + col];
             }
         }
-        partial[i] = aw_float_to_bf16(sum);
+        if constexpr (BF16) {
+            ((uint16_t *) partial)[i] = aw_float_to_bf16(sum);
+        } else {
+            ((float *) partial)[i] = sum;
+        }
     }
 }
 
@@ -1442,8 +1561,9 @@ __global__ static void aw_live_swiglu(
     }
 }
 
+template <bool BF16, bool NCCL_ORDER = false>
 __global__ static void aw_live_sum_owners(
-        const uint16_t * recv,
+        const void * recv,
         float * output,
         int total_tokens,
         int token_offset,
@@ -1452,14 +1572,52 @@ __global__ static void aw_live_sum_owners(
     for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < count;
             i += (size_t) gridDim.x*blockDim.x) {
         const size_t global = (size_t) token_offset*AW_EMBD + i;
-        float sum = aw_bf16_to_float(recv[global]);
+        float sum = 0.0f;
         #pragma unroll
-        for (int owner = 1; owner < AW_GPU_COUNT; ++owner) {
-            sum += aw_bf16_to_float(recv[(size_t) owner*total_tokens*AW_EMBD + global]);
+        for (int step = 0; step < AW_GPU_COUNT; ++step) {
+            int owner = step;
+            if constexpr (NCCL_ORDER) {
+                owner = (int) (((global/32768) + 1 + step) % AW_GPU_COUNT);
+            }
+            const size_t index = (size_t) owner*total_tokens*AW_EMBD + global;
+            if constexpr (BF16) {
+                sum = aw_bf16_to_float(aw_float_to_bf16(
+                            sum + aw_bf16_to_float(((const uint16_t *) recv)[index])));
+            } else {
+                sum += ((const float *) recv)[index];
+            }
         }
         output[i] = sum;
     }
 }
+
+__global__ static void aw_live_unpack_bf16(const uint16_t * input, float * output, size_t count) {
+    for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < count;
+            i += (size_t) gridDim.x*blockDim.x) {
+        output[i] = aw_bf16_to_float(input[i]);
+    }
+}
+
+#ifdef GGML_USE_NCCL
+static std::array<ncclComm_t, AW_GPU_COUNT> aw_live_nccl_comms = {};
+static std::once_flag aw_live_nccl_once;
+
+static void aw_live_nccl_init() {
+    std::array<int, AW_GPU_COUNT> devices = { 0, 1, 2, 3 };
+    const ncclResult_t status = ncclCommInitAll(
+            aw_live_nccl_comms.data(), AW_GPU_COUNT, devices.data());
+    if (status != ncclSuccess) {
+        throw std::runtime_error(std::string("ncclCommInitAll failed: ") +
+                ncclGetErrorString(status));
+    }
+}
+
+static void aw_live_nccl_throw(ncclResult_t status, const char * operation) {
+    if (status != ncclSuccess) {
+        throw std::runtime_error(std::string(operation) + ": " + ncclGetErrorString(status));
+    }
+}
+#endif
 
 class aw_device_buffer {
 public:
@@ -1525,6 +1683,39 @@ static float aw_bf16_to_float_host(uint16_t value) {
     float result;
     memcpy(&result, &bits, sizeof(result));
     return result;
+}
+
+static void aw_live_dump(
+        const char * directory,
+        const char * kind,
+        int layer,
+        int home,
+        int owner,
+        const void * data,
+        size_t count,
+        size_t element_size) {
+    char path[1024];
+    const int length = snprintf(path, sizeof(path), "%s/l%d-h%d-o%d-%s.bin",
+            directory, layer, home, owner, kind);
+    if (length <= 0 || (size_t) length >= sizeof(path)) {
+        throw std::runtime_error("live dump path is too long");
+    }
+    FILE * file = fopen(path, "wb");
+    if (file == nullptr) {
+        throw std::runtime_error(std::string("open live dump: ") + strerror(errno));
+    }
+    const uint64_t header[4] = {
+        UINT64_C(0x41574c4956454431),
+        (uint64_t) count,
+        (uint64_t) element_size,
+        0,
+    };
+    bool ok = fwrite(header, sizeof(header), 1, file) == 1;
+    ok = fwrite(data, element_size, count, file) == count && ok;
+    ok = fclose(file) == 0 && ok;
+    if (!ok) {
+        throw std::runtime_error("write live dump failed");
+    }
 }
 
 static float aw_dot_reference(const std::vector<float> & input, int k, float scale, int split_groups) {
@@ -1630,8 +1821,8 @@ struct aw_live_state {
         up.ensure(max_routes*AW_EXPERT_FF*sizeof(float));
         middle.ensure(max_routes*AW_EXPERT_FF*sizeof(float));
         route_output.ensure(max_routes*AW_EMBD*sizeof(float));
-        partial.ensure(total_tokens*AW_EMBD*sizeof(uint16_t));
-        recv.ensure((size_t) AW_GPU_COUNT*total_tokens*AW_EMBD*sizeof(uint16_t));
+        partial.ensure(total_tokens*AW_EMBD*sizeof(float));
+        recv.ensure((size_t) AW_GPU_COUNT*total_tokens*AW_EMBD*sizeof(float));
         if (source_ready == nullptr) {
             auto create_event = [](cudaEvent_t * event) {
                 const cudaError_t status = cudaEventCreateWithFlags(event, cudaEventDisableTiming);
@@ -1700,18 +1891,33 @@ static void aw_live_launch_projection(
         bool bf16_input) {
     const auto * desc_ptr = (const aw_work_desc *) desc.get();
     const auto * tile_count = (const int32_t *) state.tile_counts.get();
+    const bool interleave = aw_q8_interleave_enabled();
     if (bf16_input) {
-        aw_q8_service_m64<true, true><<<persistent_blocks, 256, 0, stream>>>(
-                desc_ptr, (const aw_tile_desc *) state.tiles_m64.get(), 0, n, k, tile_count + 0);
-        aw_q8_service_m32<true, true><<<persistent_blocks, 128, 0, stream>>>(
-                desc_ptr, (const aw_tile_desc *) state.tiles_m32.get(), 0, n, k, tile_count + 1);
+        if (interleave) {
+            aw_q8_service_m64<true, true, false, 2, true><<<persistent_blocks, 256, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m64.get(), 0, n, k, tile_count + 0);
+            aw_q8_service_m32<true, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m32.get(), 0, n, k, tile_count + 1);
+        } else {
+            aw_q8_service_m64<true, true><<<persistent_blocks, 256, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m64.get(), 0, n, k, tile_count + 0);
+            aw_q8_service_m32<true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m32.get(), 0, n, k, tile_count + 1);
+        }
         aw_q8_service_m16_pair<true, true><<<pair_blocks, 128, 0, stream>>>(
                 desc_ptr, (const aw_tile_desc *) state.tiles_m16.get(), 0, n, k, tile_count + 2);
     } else {
-        aw_q8_service_m64<false, true><<<persistent_blocks, 256, 0, stream>>>(
-                desc_ptr, (const aw_tile_desc *) state.tiles_m64.get(), 0, n, k, tile_count + 0);
-        aw_q8_service_m32<false, true><<<persistent_blocks, 128, 0, stream>>>(
-                desc_ptr, (const aw_tile_desc *) state.tiles_m32.get(), 0, n, k, tile_count + 1);
+        if (interleave) {
+            aw_q8_service_m64<false, true, false, 2, true><<<persistent_blocks, 256, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m64.get(), 0, n, k, tile_count + 0);
+            aw_q8_service_m32<false, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m32.get(), 0, n, k, tile_count + 1);
+        } else {
+            aw_q8_service_m64<false, true><<<persistent_blocks, 256, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m64.get(), 0, n, k, tile_count + 0);
+            aw_q8_service_m32<false, true><<<persistent_blocks, 128, 0, stream>>>(
+                    desc_ptr, (const aw_tile_desc *) state.tiles_m32.get(), 0, n, k, tile_count + 1);
+        }
         aw_q8_service_m16_pair<false, true><<<pair_blocks, 128, 0, stream>>>(
                 desc_ptr, (const aw_tile_desc *) state.tiles_m16.get(), 0, n, k, tile_count + 2);
     }
@@ -1727,19 +1933,32 @@ static void aw_live_launch_gate_up(
     const auto * gate_desc = (const aw_work_desc *) state.gate_desc.get();
     const auto * up_desc = (const aw_work_desc *) state.up_desc.get();
     const auto * tile_count = (const int32_t *) state.tile_counts.get();
+    const bool interleave = aw_q8_interleave_enabled();
     if (bf16_input) {
         aw_q8_service_m64_gate_up<true><<<fused_blocks, 512, 0, stream>>>(
                 gate_desc, up_desc, (const aw_tile_desc *) state.tiles_m64.get(),
                 0, AW_EXPERT_FF, AW_EMBD, tile_count + 0);
-        aw_q8_service_m32<true, true><<<persistent_blocks, 128, 0, stream>>>(
-                gate_desc, (const aw_tile_desc *) state.tiles_m32.get(),
-                0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        if (interleave) {
+            aw_q8_service_m32<true, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    gate_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        } else {
+            aw_q8_service_m32<true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    gate_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        }
         aw_q8_service_m16_pair<true, true><<<pair_blocks, 128, 0, stream>>>(
                 gate_desc, (const aw_tile_desc *) state.tiles_m16.get(),
                 0, AW_EXPERT_FF, AW_EMBD, tile_count + 2);
-        aw_q8_service_m32<true, true><<<persistent_blocks, 128, 0, stream>>>(
-                up_desc, (const aw_tile_desc *) state.tiles_m32.get(),
-                0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        if (interleave) {
+            aw_q8_service_m32<true, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    up_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        } else {
+            aw_q8_service_m32<true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    up_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        }
         aw_q8_service_m16_pair<true, true><<<pair_blocks, 128, 0, stream>>>(
                 up_desc, (const aw_tile_desc *) state.tiles_m16.get(),
                 0, AW_EXPERT_FF, AW_EMBD, tile_count + 2);
@@ -1747,15 +1966,27 @@ static void aw_live_launch_gate_up(
         aw_q8_service_m64_gate_up<false><<<fused_blocks, 512, 0, stream>>>(
                 gate_desc, up_desc, (const aw_tile_desc *) state.tiles_m64.get(),
                 0, AW_EXPERT_FF, AW_EMBD, tile_count + 0);
-        aw_q8_service_m32<false, true><<<persistent_blocks, 128, 0, stream>>>(
-                gate_desc, (const aw_tile_desc *) state.tiles_m32.get(),
-                0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        if (interleave) {
+            aw_q8_service_m32<false, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    gate_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        } else {
+            aw_q8_service_m32<false, true><<<persistent_blocks, 128, 0, stream>>>(
+                    gate_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        }
         aw_q8_service_m16_pair<false, true><<<pair_blocks, 128, 0, stream>>>(
                 gate_desc, (const aw_tile_desc *) state.tiles_m16.get(),
                 0, AW_EXPERT_FF, AW_EMBD, tile_count + 2);
-        aw_q8_service_m32<false, true><<<persistent_blocks, 128, 0, stream>>>(
-                up_desc, (const aw_tile_desc *) state.tiles_m32.get(),
-                0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        if (interleave) {
+            aw_q8_service_m32<false, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                    up_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        } else {
+            aw_q8_service_m32<false, true><<<persistent_blocks, 128, 0, stream>>>(
+                    up_desc, (const aw_tile_desc *) state.tiles_m32.get(),
+                    0, AW_EXPERT_FF, AW_EMBD, tile_count + 1);
+        }
         aw_q8_service_m16_pair<false, true><<<pair_blocks, 128, 0, stream>>>(
                 up_desc, (const aw_tile_desc *) state.tiles_m16.get(),
                 0, AW_EXPERT_FF, AW_EMBD, tile_count + 2);
@@ -1788,8 +2019,17 @@ int ggml_cuda_affinity_wave_live_service(
         }
         const bool shared_service = aw_env_on(getenv("GGML_CUDA_AW_SHARED_SERVICE"));
         const bool fused_gate_up = aw_env_on(getenv("GGML_CUDA_AW_FUSED_GATE_UP"));
+        const char * debug_sync = getenv("GGML_CUDA_AW_DEBUG_LIVE_SYNC");
         const bool bf16_wire = getenv("GGML_CUDA_AW_WIRE") != nullptr &&
                 strcmp(getenv("GGML_CUDA_AW_WIRE"), "bf16") == 0;
+        const bool bf16_partial = getenv("GGML_CUDA_AW_PARTIAL") != nullptr &&
+                strcmp(getenv("GGML_CUDA_AW_PARTIAL"), "bf16") == 0;
+        auto sync_live = [&](cudaStream_t stream, const char * operation) {
+            if (aw_env_on(debug_sync) &&
+                    (strcmp(debug_sync, "1") == 0 || strstr(operation, debug_sync) != nullptr)) {
+                aw_cuda_throw(cudaStreamSynchronize(stream), operation);
+            }
+        };
         const size_t wire_element_size = bf16_wire ? sizeof(uint16_t) : sizeof(float);
         int max_tokens = 0;
         std::array<int, AW_GPU_COUNT> cell_for_home;
@@ -1799,12 +2039,55 @@ int ggml_cuda_affinity_wave_live_service(
                     cells[cell].home_device < 0 || cells[cell].home_device >= AW_GPU_COUNT ||
                     cells[cell].input == nullptr || cells[cell].ids == nullptr ||
                     cells[cell].weights == nullptr || cells[cell].output == nullptr ||
+                    cells[cell].ids_stride < 8*sizeof(int32_t) ||
+                    cells[cell].weights_stride < 8*sizeof(float) ||
                     (shared_service && cells[cell].shared_output == nullptr) ||
                     cell_for_home[cells[cell].home_device] != -1) {
                 throw std::runtime_error("invalid live AffinityWave cell descriptor");
             }
             cell_for_home[cells[cell].home_device] = cell;
             max_tokens = std::max(max_tokens, cells[cell].tokens);
+        }
+        if (aw_env_on(getenv("GGML_CUDA_AW_DEBUG_ROUTES"))) {
+            for (int cell = 0; cell < n_cells; ++cell) {
+                aw_cuda_throw(cudaSetDevice(cells[cell].home_device), "set route verification device");
+                aw_cuda_throw(cudaStreamSynchronize((cudaStream_t) streams_ptr[cells[cell].home_device]),
+                        "synchronize route verification source");
+                const size_t slots = (size_t) cells[cell].tokens*8;
+                const size_t route_row_bytes = 8*sizeof(int32_t);
+                std::vector<int32_t> ids(slots);
+                std::vector<float> weights(slots);
+                aw_cuda_throw(cudaMemcpy2D(ids.data(), route_row_bytes,
+                            cells[cell].ids, cells[cell].ids_stride,
+                            route_row_bytes, cells[cell].tokens, cudaMemcpyDeviceToHost),
+                        "copy route verification ids");
+                aw_cuda_throw(cudaMemcpy2D(weights.data(), route_row_bytes,
+                            cells[cell].weights, cells[cell].weights_stride,
+                            route_row_bytes, cells[cell].tokens, cudaMemcpyDeviceToHost),
+                        "copy route verification weights");
+                std::array<size_t, AW_GPU_COUNT> owner_counts{};
+                size_t invalid = 0;
+                double weight_sum = 0.0;
+                float weight_max = 0.0f;
+                int32_t id_min = std::numeric_limits<int32_t>::max();
+                int32_t id_max = std::numeric_limits<int32_t>::min();
+                for (size_t slot = 0; slot < slots; ++slot) {
+                    id_min = std::min(id_min, ids[slot]);
+                    id_max = std::max(id_max, ids[slot]);
+                    if (ids[slot] >= 0 && ids[slot] < AW_EXPERTS) {
+                        ++owner_counts[ids[slot]/AW_PRIMARY_PER_GPU];
+                    } else {
+                        ++invalid;
+                    }
+                    weight_sum += weights[slot];
+                    weight_max = std::max(weight_max, std::abs(weights[slot]));
+                }
+                fprintf(stderr,
+                        "AffinityWave: routes layer=%d home=%d ids=%d..%d owners=%zu,%zu,%zu,%zu invalid=%zu weight-sum=%.8g weight-max=%.8g\n",
+                        cells[cell].layer, cells[cell].home_device, id_min, id_max,
+                        owner_counts[0], owner_counts[1], owner_counts[2], owner_counts[3],
+                        invalid, weight_sum, weight_max);
+            }
         }
         constexpr int MAX_GROUP_CELLS = AW_GPU_COUNT;
         const char * group_cells_env = getenv("GGML_CUDA_AW_GROUP_CELLS");
@@ -1906,7 +2189,8 @@ int ggml_cuda_affinity_wave_live_service(
                 const int home = cells[cell].home_device;
                 const size_t input_elements = (size_t) cells[cell].tokens*AW_EMBD;
                 const size_t input_cell_bytes = input_elements*wire_element_size;
-                const size_t route_cell_bytes = (size_t) cells[cell].tokens*8*sizeof(int32_t);
+                const size_t route_row_bytes = 8*sizeof(int32_t);
+                const size_t route_cell_bytes = (size_t) cells[cell].tokens*route_row_bytes;
                 aw_live_state & home_state = aw_live_states[group][home];
                 aw_cuda_throw(cudaSetDevice(home), "set live input home device");
                 aw_cuda_throw(cudaEventRecord(home_state.source_ready, streams[home]),
@@ -1928,6 +2212,18 @@ int ggml_cuda_affinity_wave_live_service(
                     aw_cuda_throw(cudaMemcpyAsync(home_input, cells[cell].input, input_cell_bytes,
                                 cudaMemcpyDeviceToDevice, copy_stream), "copy local live input");
                 }
+                char * home_ids = (char *) home_state.ids.get() +
+                        (size_t) group_cell*route_cell_stride_bytes;
+                char * home_weights = (char *) home_state.weights.get() +
+                        (size_t) group_cell*route_cell_stride_bytes;
+                aw_cuda_throw(cudaMemcpy2DAsync(home_ids, route_row_bytes,
+                            cells[cell].ids, cells[cell].ids_stride,
+                            route_row_bytes, cells[cell].tokens,
+                            cudaMemcpyDeviceToDevice, copy_stream), "copy local live ids");
+                aw_cuda_throw(cudaMemcpy2DAsync(home_weights, route_row_bytes,
+                            cells[cell].weights, cells[cell].weights_stride,
+                            route_row_bytes, cells[cell].tokens,
+                            cudaMemcpyDeviceToDevice, copy_stream), "copy local live weights");
                 for (int owner = 0; owner < AW_GPU_COUNT; ++owner) {
                     aw_live_state & dst = aw_live_states[group][owner];
                     if (owner != home) {
@@ -1939,22 +2235,20 @@ int ggml_cuda_affinity_wave_live_service(
                     char * input_dst = (char *) dst.input.get() + (size_t) group_cell*input_cell_stride_bytes;
                     char * ids_dst = (char *) dst.ids.get() + (size_t) group_cell*route_cell_stride_bytes;
                     char * weights_dst = (char *) dst.weights.get() + (size_t) group_cell*route_cell_stride_bytes;
-                    if (owner == home) {
-                        aw_cuda_throw(cudaMemcpyAsync(ids_dst, cells[cell].ids, route_cell_bytes,
-                                    cudaMemcpyDeviceToDevice, copy_stream), "copy local live ids");
-                        aw_cuda_throw(cudaMemcpyAsync(weights_dst, cells[cell].weights, route_cell_bytes,
-                                    cudaMemcpyDeviceToDevice, copy_stream), "copy local live weights");
-                    } else {
+                    if (owner != home) {
                         aw_cuda_throw(cudaMemcpyPeerAsync(input_dst, owner, home_input, home,
                                     input_cell_bytes, copy_stream), "copy peer live input");
-                        aw_cuda_throw(cudaMemcpyPeerAsync(ids_dst, owner, cells[cell].ids, home,
+                        aw_cuda_throw(cudaMemcpyPeerAsync(ids_dst, owner, home_ids, home,
                                     route_cell_bytes, copy_stream), "copy peer live ids");
-                        aw_cuda_throw(cudaMemcpyPeerAsync(weights_dst, owner, cells[cell].weights, home,
+                        aw_cuda_throw(cudaMemcpyPeerAsync(weights_dst, owner, home_weights, home,
                                     route_cell_bytes, copy_stream), "copy peer live weights");
                     }
                 }
                 aw_cuda_throw(cudaEventRecord(home_state.input_ready, copy_stream),
                         "record live input ready");
+                aw_cuda_throw(cudaStreamWaitEvent(streams[home], home_state.input_ready, 0),
+                        "preserve live input source");
+                sync_live(copy_stream, "synchronize live input copies");
             }
         }
         if (live_call == 0) {
@@ -2009,35 +2303,51 @@ int ggml_cuda_affinity_wave_live_service(
                         state.input.get(),
                         (int32_t *) state.route_input.get(),
                         (float *) state.gate.get(), (float *) state.up.get(),
-                        (float *) state.middle.get(), (float *) state.route_output.get(), descriptors);
-                aw_live_fill_routes<<<aw_grid(total_slots), 256, 0, compute_stream>>>(
-                        (const int32_t *) state.ids.get(), (int32_t *) state.cursors.get(),
+                        (float *) state.middle.get(), (float *) state.route_output.get(),
+                        descriptors);
+                aw_live_fill_routes_deterministic<<<descriptors, 256, 0, compute_stream>>>(
+                        (const int32_t *) state.ids.get(), (const int32_t *) state.offsets.get(),
                         (int32_t *) state.route_input.get(), (int32_t *) state.token_routes.get(),
-                        total_slots, owner, stride_tokens);
+                        descriptors, owner, stride_tokens);
 
-                cudaDeviceProp prop;
-                aw_cuda_throw(cudaGetDeviceProperties(&prop, owner), "get live owner properties");
-                const int persistent_blocks = prop.multiProcessorCount*2;
-                const int pair_blocks = prop.multiProcessorCount*3;
+                const int sm_count = aw_sm_counts[owner];
+                if (sm_count <= 0) {
+                    throw std::runtime_error("live owner SM count was not initialized");
+                }
+                const int persistent_blocks = sm_count*2;
+                const int pair_blocks = sm_count*3;
                 if (fused_gate_up) {
-                    aw_live_launch_gate_up(state, compute_stream, prop.multiProcessorCount,
+                    aw_live_launch_gate_up(state, compute_stream, sm_count,
                             persistent_blocks, pair_blocks, bf16_wire);
+                    sync_live(compute_stream, "synchronize live fused gate/up");
                 } else {
                     aw_live_launch_projection(state, state.gate_desc, AW_EXPERT_FF, AW_EMBD,
                             compute_stream, persistent_blocks, pair_blocks, bf16_wire);
+                    sync_live(compute_stream, "synchronize live gate");
                     aw_live_launch_projection(state, state.up_desc, AW_EXPERT_FF, AW_EMBD,
                             compute_stream, persistent_blocks, pair_blocks, bf16_wire);
+                    sync_live(compute_stream, "synchronize live up");
                 }
                 aw_live_swiglu<<<aw_grid((size_t) total_slots*AW_EXPERT_FF), 256, 0, compute_stream>>>(
                         (const float *) state.gate.get(), (const float *) state.up.get(),
                         (float *) state.middle.get(), (const int32_t *) state.offsets.get() + descriptors);
+                sync_live(compute_stream, "synchronize live swiglu");
                 aw_live_launch_projection(state, state.down_desc, AW_EMBD, AW_EXPERT_FF,
                         compute_stream, persistent_blocks, pair_blocks, false);
-                aw_live_owner_reduce<<<aw_grid((size_t) total_tokens*AW_EMBD), 256, 0, compute_stream>>>(
-                        (const float *) state.route_output.get(), (const int32_t *) state.ids.get(),
-                        (const int32_t *) state.token_routes.get(), (const float *) state.weights.get(),
-                        (uint16_t *) state.partial.get(), total_tokens, owner);
+                sync_live(compute_stream, "synchronize live down");
+                if (bf16_partial) {
+                    aw_live_owner_reduce<true><<<aw_grid((size_t) total_tokens*AW_EMBD), 256, 0, compute_stream>>>(
+                            (const float *) state.route_output.get(), (const int32_t *) state.ids.get(),
+                            (const int32_t *) state.token_routes.get(), (const float *) state.weights.get(),
+                            state.partial.get(), total_tokens, owner);
+                } else {
+                    aw_live_owner_reduce<false><<<aw_grid((size_t) total_tokens*AW_EMBD), 256, 0, compute_stream>>>(
+                            (const float *) state.route_output.get(), (const int32_t *) state.ids.get(),
+                            (const int32_t *) state.token_routes.get(), (const float *) state.weights.get(),
+                            state.partial.get(), total_tokens, owner);
+                }
                 aw_cuda_throw(cudaGetLastError(), "launch live owner service");
+                sync_live(compute_stream, "synchronize live owner reduce");
                 aw_cuda_throw(cudaEventRecord(state.compute_done, compute_stream),
                         "record live owner compute done");
                 if (shared_service) {
@@ -2081,11 +2391,171 @@ int ggml_cuda_affinity_wave_live_service(
             fprintf(stderr, "AffinityWave: live service owners queued\n");
         }
 
+        if (aw_env_on(getenv("GGML_CUDA_AW_VERIFY_LOCAL"))) {
+            for (int group = 0; group < n_groups; ++group) {
+                const int cell_begin = group_begin(group);
+                const int group_cells = group_size(group);
+                const int stride_tokens = group_max_tokens[group];
+                for (int group_cell = 0; group_cell < group_cells; ++group_cell) {
+                    const int cell = cell_begin + group_cell;
+                    const int owner = cells[cell].home_device;
+                    if (cells[cell].reference == nullptr) {
+                        throw std::runtime_error("local verification reference is missing");
+                    }
+                    aw_live_state & state = aw_live_states[group][owner];
+                    aw_cuda_throw(cudaSetDevice(owner), "set local verification device");
+                    aw_cuda_throw(cudaStreamSynchronize(streams[owner]), "synchronize local verification");
+                    const size_t count = (size_t) cells[cell].tokens*AW_EMBD;
+                    std::vector<uint16_t> observed_bf16;
+                    std::vector<float> observed_f32;
+                    std::vector<float> reference(count);
+                    const size_t partial_offset = (size_t) group_cell*stride_tokens*AW_EMBD;
+                    if (bf16_partial) {
+                        observed_bf16.resize(count);
+                        aw_cuda_throw(cudaMemcpy(observed_bf16.data(),
+                                    (const uint16_t *) state.partial.get() + partial_offset,
+                                    count*sizeof(uint16_t), cudaMemcpyDeviceToHost),
+                                "copy local BF16 verification partial");
+                    } else {
+                        observed_f32.resize(count);
+                        aw_cuda_throw(cudaMemcpy(observed_f32.data(),
+                                    (const float *) state.partial.get() + partial_offset,
+                                    count*sizeof(float), cudaMemcpyDeviceToHost),
+                                "copy local FP32 verification partial");
+                    }
+                    aw_cuda_throw(cudaMemcpy(reference.data(), cells[cell].reference,
+                                count*sizeof(float), cudaMemcpyDeviceToHost),
+                            "copy local verification reference");
+                    double sum2 = 0.0;
+                    double ref2 = 0.0;
+                    double observed2 = 0.0;
+                    float max_abs = 0.0f;
+                    size_t nonfinite = 0;
+                    for (size_t i = 0; i < count; ++i) {
+                        const float value = bf16_partial ?
+                                aw_bf16_to_float_host(observed_bf16[i]) : observed_f32[i];
+                        const float diff = value - reference[i];
+                        if (!std::isfinite(value) || !std::isfinite(reference[i])) {
+                            ++nonfinite;
+                            continue;
+                        }
+                        sum2 += (double) diff*diff;
+                        ref2 += (double) reference[i]*reference[i];
+                        observed2 += (double) value*value;
+                        max_abs = std::max(max_abs, std::abs(diff));
+                    }
+                    fprintf(stderr,
+                            "AffinityWave: local verify layer=%d home=%d tokens=%d rms=%.8g rel=%.8g observed=%.8g reference=%.8g max=%.8g nonfinite=%zu\n",
+                            cells[cell].layer, owner, cells[cell].tokens,
+                            std::sqrt(sum2/count), std::sqrt(sum2/std::max(ref2, 1.0e-30)),
+                            std::sqrt(observed2/count), std::sqrt(ref2/count),
+                            max_abs, nonfinite);
+                }
+            }
+        }
+
+        const char * service_dump = getenv("GGML_CUDA_AW_SERVICE_DUMP");
+        const char * service_dump_layer_env = getenv("GGML_CUDA_AW_SERVICE_DUMP_LAYER");
+        const int service_dump_layer = service_dump_layer_env != nullptr ?
+                atoi(service_dump_layer_env) : 0;
+        if (bf16_partial && service_dump != nullptr && service_dump[0] != '\0') {
+            for (int group = 0; group < n_groups; ++group) {
+                const int cell_begin = group_begin(group);
+                const int stride_tokens = group_max_tokens[group];
+                for (int group_cell = 0; group_cell < group_size(group); ++group_cell) {
+                    const int cell = cell_begin + group_cell;
+                    if (cells[cell].layer != service_dump_layer) {
+                        continue;
+                    }
+                    const size_t count = (size_t) cells[cell].tokens*AW_EMBD;
+                    const size_t offset = (size_t) group_cell*stride_tokens*AW_EMBD;
+                    for (int owner = 0; owner < AW_GPU_COUNT; ++owner) {
+                        aw_cuda_throw(cudaSetDevice(owner), "set live dump owner device");
+                        aw_cuda_throw(cudaStreamSynchronize(streams[owner]),
+                                "synchronize live dump owner partial");
+                        std::vector<uint16_t> values(count);
+                        aw_cuda_throw(cudaMemcpy(values.data(),
+                                    (const uint16_t *) aw_live_states[group][owner].partial.get() + offset,
+                                    count*sizeof(uint16_t), cudaMemcpyDeviceToHost),
+                                "copy live dump owner partial");
+                        aw_live_dump(service_dump, "partial-bf16", cells[cell].layer,
+                                cells[cell].home_device, owner, values.data(), count, sizeof(uint16_t));
+                    }
+                }
+            }
+        }
+
+        const bool nccl_sum = bf16_partial && aw_env_on(getenv("GGML_CUDA_AW_NCCL_SUM"));
+        const bool nccl_order_sum =
+                bf16_partial && aw_env_on(getenv("GGML_CUDA_AW_NCCL_ORDER_SUM"));
+        if (nccl_sum) {
+#ifdef GGML_USE_NCCL
+            std::call_once(aw_live_nccl_once, aw_live_nccl_init);
+            for (int group = 0; group < n_groups; ++group) {
+                const int cell_begin = group_begin(group);
+                const int group_cells = group_size(group);
+                const int stride_tokens = group_max_tokens[group];
+                const int total_tokens = group_cells*stride_tokens;
+                const size_t count = (size_t) total_tokens*AW_EMBD;
+
+                aw_live_nccl_throw(ncclGroupStart(), "start live NCCL sum");
+                for (int owner = 0; owner < AW_GPU_COUNT; ++owner) {
+                    aw_cuda_throw(cudaSetDevice(owner), "set live NCCL owner device");
+                    aw_live_state & state = aw_live_states[group][owner];
+                    aw_cuda_throw(cudaStreamWaitEvent(streams[owner], state.compute_done, 0),
+                            "wait for live NCCL owner compute");
+                    aw_live_nccl_throw(ncclAllReduce(
+                                state.partial.get(), state.partial.get(), count,
+                                ncclBfloat16, ncclSum,
+                                aw_live_nccl_comms[owner], streams[owner]),
+                            "enqueue live NCCL all-reduce");
+                }
+                aw_live_nccl_throw(ncclGroupEnd(), "finish live NCCL sum");
+
+                for (int group_cell = 0; group_cell < group_cells; ++group_cell) {
+                    const int cell = cell_begin + group_cell;
+                    const int home = cells[cell].home_device;
+                    const size_t cell_count = (size_t) cells[cell].tokens*AW_EMBD;
+                    const uint16_t * input =
+                            (const uint16_t *) aw_live_states[group][home].partial.get() +
+                            (size_t) group_cell*stride_tokens*AW_EMBD;
+                    aw_cuda_throw(cudaSetDevice(home), "set live NCCL output device");
+                    aw_live_unpack_bf16<<<aw_grid(cell_count), 256, 0, streams[home]>>>(
+                            input, cells[cell].output, cell_count);
+                    aw_cuda_throw(cudaGetLastError(), "unpack live NCCL sum");
+                    sync_live(streams[home], "synchronize live NCCL owner sum");
+                    if (service_dump != nullptr && service_dump[0] != '\0' &&
+                            cells[cell].layer == service_dump_layer) {
+                        aw_cuda_throw(cudaStreamSynchronize(streams[home]),
+                                "synchronize live dump reduced output");
+                        std::vector<uint16_t> values(cell_count);
+                        aw_cuda_throw(cudaMemcpy(values.data(), input,
+                                    cell_count*sizeof(uint16_t), cudaMemcpyDeviceToHost),
+                                "copy live dump reduced output");
+                        aw_live_dump(service_dump, "reduced-bf16", cells[cell].layer,
+                                home, -1, values.data(), cell_count, sizeof(uint16_t));
+                    }
+                }
+                for (int owner = 0; owner < AW_GPU_COUNT; ++owner) {
+                    aw_cuda_throw(cudaSetDevice(owner), "set live NCCL release device");
+                    aw_live_state & state = aw_live_states[group][owner];
+                    aw_cuda_throw(cudaEventRecord(state.output_ready, streams[owner]),
+                            "record live NCCL output ready");
+                    aw_cuda_throw(cudaEventRecord(state.scratch_free, streams[owner]),
+                            "record live NCCL scratch free");
+                }
+            }
+#else
+            throw std::runtime_error("AffinityWave NCCL sum requested without NCCL support");
+#endif
+        } else {
         for (int group = 0; group < n_groups; ++group) {
             const int cell_begin = group_begin(group);
             const int group_cells = group_size(group);
             const int stride_tokens = group_max_tokens[group];
-            const size_t partial_cell_stride_bytes = (size_t) stride_tokens*AW_EMBD*sizeof(uint16_t);
+            const size_t partial_element_size = bf16_partial ? sizeof(uint16_t) : sizeof(float);
+            const size_t partial_cell_stride_bytes =
+                    (size_t) stride_tokens*AW_EMBD*partial_element_size;
             const int total_tokens = group_cells*stride_tokens;
             for (int owner = 0; owner < AW_GPU_COUNT; ++owner) {
                 aw_cuda_throw(cudaSetDevice(owner), "set live output owner device");
@@ -2101,9 +2571,10 @@ int ggml_cuda_affinity_wave_live_service(
                     const char * partial_src = (const char *) src.partial.get() +
                             (size_t) group_cell*partial_cell_stride_bytes;
                     char * recv_dst = (char *) aw_live_states[group][home].recv.get() +
-                            ((size_t) owner*total_tokens + (size_t) group_cell*stride_tokens)*AW_EMBD*sizeof(uint16_t);
+                            ((size_t) owner*total_tokens +
+                                (size_t) group_cell*stride_tokens)*AW_EMBD*partial_element_size;
                     const size_t partial_cell_bytes =
-                            (size_t) cells[cell].tokens*AW_EMBD*sizeof(uint16_t);
+                            (size_t) cells[cell].tokens*AW_EMBD*partial_element_size;
                     if (owner == home) {
                         aw_cuda_throw(cudaMemcpyAsync(recv_dst, partial_src, partial_cell_bytes,
                                     cudaMemcpyDeviceToDevice, copy_stream), "copy local owner partial");
@@ -2113,6 +2584,7 @@ int ggml_cuda_affinity_wave_live_service(
                     }
                 }
                 aw_cuda_throw(cudaEventRecord(src.output_ready, copy_stream), "record live output ready");
+                sync_live(copy_stream, "synchronize live output copies");
             }
         }
 
@@ -2129,12 +2601,125 @@ int ggml_cuda_affinity_wave_live_service(
                     aw_cuda_throw(cudaStreamWaitEvent(streams[home],
                                 aw_live_states[group][owner].output_ready, 0), "wait for live owner output");
                 }
-                aw_live_sum_owners<<<aw_grid((size_t) cells[cell].tokens*AW_EMBD), 256, 0, streams[home]>>>(
-                        (const uint16_t *) aw_live_states[group][home].recv.get(), cells[cell].output,
-                        total_tokens, group_cell*stride_tokens, cells[cell].tokens);
+                if (bf16_partial) {
+                    if (nccl_order_sum) {
+                        aw_live_sum_owners<true, true>
+                                <<<aw_grid((size_t) cells[cell].tokens*AW_EMBD), 256, 0, streams[home]>>>(
+                                        aw_live_states[group][home].recv.get(), cells[cell].output,
+                                        total_tokens, group_cell*stride_tokens, cells[cell].tokens);
+                    } else {
+                        aw_live_sum_owners<true>
+                                <<<aw_grid((size_t) cells[cell].tokens*AW_EMBD), 256, 0, streams[home]>>>(
+                                        aw_live_states[group][home].recv.get(), cells[cell].output,
+                                        total_tokens, group_cell*stride_tokens, cells[cell].tokens);
+                    }
+                } else {
+                    aw_live_sum_owners<false><<<aw_grid((size_t) cells[cell].tokens*AW_EMBD), 256, 0, streams[home]>>>(
+                            aw_live_states[group][home].recv.get(), cells[cell].output,
+                            total_tokens, group_cell*stride_tokens, cells[cell].tokens);
+                }
                 aw_cuda_throw(cudaGetLastError(), "launch live owner sum");
                 aw_cuda_throw(cudaEventRecord(aw_live_states[group][home].recv_free, streams[home]),
                         "record live receive scratch free");
+                sync_live(streams[home], "synchronize live owner sum");
+            }
+        }
+        }
+        if (aw_env_on(getenv("GGML_CUDA_AW_VERIFY_LOCAL"))) {
+            for (int cell = 0; cell < n_cells; ++cell) {
+                int group = 0;
+                while (cell >= group_offsets[group + 1]) {
+                    ++group;
+                }
+                const int group_cell = cell - group_begin(group);
+                const int stride_tokens = group_max_tokens[group];
+                const int total_tokens = group_size(group)*stride_tokens;
+                const int home = cells[cell].home_device;
+                aw_cuda_throw(cudaSetDevice(home), "set service verification device");
+                aw_cuda_throw(cudaStreamSynchronize(streams[home]), "synchronize service verification");
+                const size_t count = (size_t) cells[cell].tokens*AW_EMBD;
+                std::vector<float> observed(count);
+                std::vector<float> reference(count);
+                std::vector<float> direct(count, 0.0f);
+                std::vector<float> received(count, 0.0f);
+                aw_cuda_throw(cudaMemcpy(observed.data(), cells[cell].output,
+                            count*sizeof(float), cudaMemcpyDeviceToHost),
+                        "copy service verification output");
+                aw_cuda_throw(cudaMemcpy(reference.data(), cells[cell].reference,
+                            count*sizeof(float), cudaMemcpyDeviceToHost),
+                        "copy service verification reference");
+                for (int owner = 0; owner < AW_GPU_COUNT; ++owner) {
+                    if (bf16_partial) {
+                        std::vector<uint16_t> values(count);
+                        aw_cuda_throw(cudaSetDevice(owner), "set direct verification device");
+                        aw_cuda_throw(cudaMemcpy(values.data(),
+                                    (const uint16_t *) aw_live_states[group][owner].partial.get() +
+                                        (size_t) group_cell*stride_tokens*AW_EMBD,
+                                    count*sizeof(uint16_t), cudaMemcpyDeviceToHost),
+                                "copy direct BF16 verification partial");
+                        for (size_t i = 0; i < count; ++i) {
+                            direct[i] += aw_bf16_to_float_host(values[i]);
+                        }
+                        aw_cuda_throw(cudaSetDevice(home), "restore receive verification device");
+                        aw_cuda_throw(cudaMemcpy(values.data(),
+                                    (const uint16_t *) aw_live_states[group][home].recv.get() +
+                                        ((size_t) owner*total_tokens +
+                                            (size_t) group_cell*stride_tokens)*AW_EMBD,
+                                    count*sizeof(uint16_t), cudaMemcpyDeviceToHost),
+                                "copy received BF16 verification partial");
+                        for (size_t i = 0; i < count; ++i) {
+                            received[i] += aw_bf16_to_float_host(values[i]);
+                        }
+                    } else {
+                        std::vector<float> values(count);
+                        aw_cuda_throw(cudaSetDevice(owner), "set direct verification device");
+                        aw_cuda_throw(cudaMemcpy(values.data(),
+                                    (const float *) aw_live_states[group][owner].partial.get() +
+                                        (size_t) group_cell*stride_tokens*AW_EMBD,
+                                    count*sizeof(float), cudaMemcpyDeviceToHost),
+                                "copy direct FP32 verification partial");
+                        for (size_t i = 0; i < count; ++i) {
+                            direct[i] += values[i];
+                        }
+                        aw_cuda_throw(cudaSetDevice(home), "restore receive verification device");
+                        aw_cuda_throw(cudaMemcpy(values.data(),
+                                    (const float *) aw_live_states[group][home].recv.get() +
+                                        ((size_t) owner*total_tokens +
+                                            (size_t) group_cell*stride_tokens)*AW_EMBD,
+                                    count*sizeof(float), cudaMemcpyDeviceToHost),
+                                "copy received FP32 verification partial");
+                        for (size_t i = 0; i < count; ++i) {
+                            received[i] += values[i];
+                        }
+                    }
+                }
+                double sum2 = 0.0;
+                double direct2 = 0.0;
+                double received2 = 0.0;
+                double output_received2 = 0.0;
+                double ref2 = 0.0;
+                float max_abs = 0.0f;
+                size_t nonfinite = 0;
+                for (size_t i = 0; i < count; ++i) {
+                    const float diff = observed[i] - reference[i];
+                    if (!std::isfinite(observed[i]) || !std::isfinite(reference[i])) {
+                        ++nonfinite;
+                        continue;
+                    }
+                    sum2 += (double) diff*diff;
+                    direct2 += (double) (direct[i] - reference[i])*(direct[i] - reference[i]);
+                    received2 += (double) (received[i] - reference[i])*(received[i] - reference[i]);
+                    output_received2 += (double) (observed[i] - received[i])*(observed[i] - received[i]);
+                    ref2 += (double) reference[i]*reference[i];
+                    max_abs = std::max(max_abs, std::abs(diff));
+                }
+                fprintf(stderr,
+                        "AffinityWave: service verify layer=%d home=%d tokens=%d rel=%.8g direct=%.8g recv=%.8g out-recv=%.8g max=%.8g nonfinite=%zu\n",
+                        cells[cell].layer, home, cells[cell].tokens,
+                        std::sqrt(sum2/std::max(ref2, 1.0e-30)),
+                        std::sqrt(direct2/std::max(ref2, 1.0e-30)),
+                        std::sqrt(received2/std::max(ref2, 1.0e-30)),
+                        std::sqrt(output_received2/std::max(ref2, 1.0e-30)), max_abs, nonfinite);
             }
         }
         if (live_call == 0) {
@@ -2428,10 +3013,10 @@ void ggml_cuda_affinity_wave_validate_env_or_abort() {
     if (!aw_load_config(config, error)) {
         GGML_ABORT("AffinityWave configuration error: %s", error.c_str());
     }
-    GGML_LOG_INFO("AffinityWave: expert service enabled; map=%s wire=%s layout=%s "
+    GGML_LOG_INFO("AffinityWave: expert service enabled; map=%s wire=%s layout=%s kernel=%s "
             "down-cache=%d m64-split=%d home=%s check=%d\n", config.map.c_str(), config.wire.c_str(),
-            config.q8_layout.c_str(), config.down_cache, config.m64_split, config.home.c_str(),
-            config.check ? 1 : 0);
+            config.q8_layout.c_str(), config.q8_kernel.c_str(), config.down_cache, config.m64_split,
+            config.home.c_str(), config.check ? 1 : 0);
     if (ggml_cuda_affinity_wave_t64_enabled()) {
         GGML_LOG_INFO("AffinityWave: in-place T64 expert loading, M64 plan prefill, and T64 MMVQ decode enabled\n");
     } else {
@@ -2457,14 +3042,16 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
         if (!aw_load_config(config, config_error)) {
             throw std::runtime_error(config_error);
         }
-        if (params->device < 0 || params->device >= AW_GPU_COUNT || params->active_cells < 1 ||
+        if (params->device < 0 || params->device >= AW_GPU_COUNT || params->participants < 1 ||
+                params->participants > AW_GPU_COUNT || params->device >= params->participants ||
+                params->active_cells < 1 ||
                 params->active_cells > AW_GPU_COUNT || params->tokens_per_cell < 32 ||
                 params->tokens_per_cell % 32 != 0 || params->repeats < 1 ||
-                params->route_pattern < 0 || params->route_pattern > 1) {
+                params->route_pattern < 0 || params->route_pattern > 2) {
             throw std::runtime_error("invalid service benchmark dimensions");
         }
-        if (params->route_pattern == 1 && params->tokens_per_cell != 2048) {
-            throw std::runtime_error("tail-mix routing currently requires 2048 tokens per cell");
+        if (params->route_pattern != 0 && params->tokens_per_cell != 2048) {
+            throw std::runtime_error("mixed routing currently requires 2048 tokens per cell");
         }
         aw_cuda_throw(cudaSetDevice(params->device), "cudaSetDevice");
 
@@ -2501,7 +3088,7 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
             for (size_t route = 0; route < route_expert.size(); ++route) {
                 route_expert[route] = (int) (route % AW_PRIMARY_PER_GPU);
             }
-        } else {
+        } else if (params->route_pattern == 1) {
             constexpr std::array<int, 8> tail_counts = { 1, 15, 17, 31, 33, 63, 95, 257 };
             size_t route = 0;
             for (int expert = 0; expert < AW_PRIMARY_PER_GPU; ++expert) {
@@ -2512,6 +3099,19 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
             }
             if (route != route_expert.size()) {
                 throw std::runtime_error("internal tail-mix routing count mismatch");
+            }
+        } else {
+            constexpr std::array<int, 8> edge_counts = { 1, 16, 17, 31, 32, 48, 63, 64 };
+            size_t route = 0;
+            for (int expert = 0; expert < AW_PRIMARY_PER_GPU; ++expert) {
+                const int count = expert < (int) edge_counts.size() ? edge_counts[expert] :
+                        68 + (expert < 24 ? 1 : 0);
+                for (int i = 0; i < count; ++i) {
+                    route_expert[route++] = expert;
+                }
+            }
+            if (route != route_expert.size()) {
+                throw std::runtime_error("internal edge-mix routing count mismatch");
             }
         }
 
@@ -2723,6 +3323,7 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
             const auto * tiles64_ptr = (const aw_tile_desc *) tiles_m64_dev.get();
             const auto * tiles32_ptr = (const aw_tile_desc *) tiles_m32_dev.get();
             const bool t64 = config.q8_layout == "t64k32";
+            const bool interleave = config.q8_kernel == "interleave";
             if (n_mtiles64 != 0) {
                 if (config.m64_split == 1) {
                     if (input_bf16) {
@@ -2742,13 +3343,19 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
                     }
                 } else {
                     if (input_bf16) {
-                        if (t64) {
+                        if (interleave) {
+                            aw_q8_service_m64<true, true, false, 2, true><<<persistent_blocks, 256, 0, stream>>>(
+                                    desc_ptr, tiles64_ptr, n_mtiles64, n, k);
+                        } else if (t64) {
                             aw_q8_service_m64<true, true><<<persistent_blocks, 256, 0, stream>>>(
                                     desc_ptr, tiles64_ptr, n_mtiles64, n, k);
                         } else {
                             aw_q8_service_m64<true, false><<<persistent_blocks, 256, 0, stream>>>(
                                     desc_ptr, tiles64_ptr, n_mtiles64, n, k);
                         }
+                    } else if (interleave) {
+                        aw_q8_service_m64<false, true, false, 2, true><<<persistent_blocks, 256, 0, stream>>>(
+                                desc_ptr, tiles64_ptr, n_mtiles64, n, k);
                     } else if (t64) {
                         aw_q8_service_m64<false, true><<<persistent_blocks, 256, 0, stream>>>(
                                 desc_ptr, tiles64_ptr, n_mtiles64, n, k);
@@ -2760,13 +3367,19 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
             }
             if (n_mtiles32 != 0) {
                 if (input_bf16) {
-                    if (t64) {
+                    if (interleave) {
+                        aw_q8_service_m32<true, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                                desc_ptr, tiles32_ptr, n_mtiles32, n, k);
+                    } else if (t64) {
                         aw_q8_service_m32<true, true><<<persistent_blocks, 128, 0, stream>>>(
                                 desc_ptr, tiles32_ptr, n_mtiles32, n, k);
                     } else {
                         aw_q8_service_m32<true, false><<<persistent_blocks, 128, 0, stream>>>(
                                 desc_ptr, tiles32_ptr, n_mtiles32, n, k);
                     }
+                } else if (interleave) {
+                    aw_q8_service_m32<false, true, true><<<persistent_blocks, 128, 0, stream>>>(
+                            desc_ptr, tiles32_ptr, n_mtiles32, n, k);
                 } else if (t64) {
                     aw_q8_service_m32<false, true><<<persistent_blocks, 128, 0, stream>>>(
                             desc_ptr, tiles32_ptr, n_mtiles32, n, k);
@@ -2863,8 +3476,8 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
         }
         aw_cuda_throw(cudaGetLastError(), "service warmup kernels");
         aw_cuda_throw(cudaStreamSynchronize(stream), "service warmup");
-        if (!aw_bench_barrier.arrive_and_wait()) {
-            throw std::runtime_error("four-GPU benchmark barrier was cancelled");
+        if (!aw_bench_barrier.arrive_and_wait(params->participants)) {
+            throw std::runtime_error("benchmark barrier was cancelled");
         }
         aw_cuda_throw(cudaEventRecord(begin, stream), "record begin");
         for (int repeat = 0; repeat < params->repeats; ++repeat) {
@@ -2876,8 +3489,8 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
         aw_cuda_throw(cudaEventElapsedTime(&total_ms, begin, end), "elapsed time");
         aw_cuda_throw(cudaGetLastError(), "service kernels");
 
-        if (!aw_bench_barrier.arrive_and_wait()) {
-            throw std::runtime_error("four-GPU stage barrier was cancelled");
+        if (!aw_bench_barrier.arrive_and_wait(params->participants)) {
+            throw std::runtime_error("stage barrier was cancelled");
         }
         std::vector<cudaEvent_t> stage_events((size_t) params->repeats*7);
         for (cudaEvent_t & event : stage_events) {
@@ -2983,6 +3596,7 @@ extern "C" int ggml_cuda_affinity_wave_service_bench(
         result->tiles_m64 = n_mtiles64;
         result->tiles_m32 = n_mtiles32;
         result->tiles_m16 = n_mtiles16;
+        result->q8_kernel = config.q8_kernel == "interleave" ? 1 : 0;
         result->check_ran = config.check ? 1 : 0;
         result->check_passed = check_passed;
         result->check_count = config.check ? check_count : 0;
