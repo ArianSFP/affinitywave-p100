@@ -1,0 +1,117 @@
+0.00.998.793 I llama_completion: llama backend init
+0.00.998.803 I llama_completion: load the model and apply lora adapter, if any
+0.00.998.884 W common_fit_params: failed to fit params to free device memory: llama_params_fit is not implemented for SPLIT_MODE_TENSOR, abort
+0.03.220.008 W AffinityWave: loader tensor blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.0.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU0 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU1 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU2 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU3 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=1 contiguous=1 enabled=1 eligible=1
+0.03.458.755 W AffinityWave: loader tensor blk.0.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.0.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+0.03.585.080 W AffinityWave: loader tensor blk.0.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.0.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.03.750.001 W AffinityWave: loader tensor blk.1.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.1.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+0.03.986.544 W AffinityWave: loader tensor blk.1.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.1.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.04.114.802 W AffinityWave: loader tensor blk.1.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.1.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.04.273.140 W AffinityWave: loader tensor blk.2.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.2.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+0.04.507.982 W AffinityWave: loader tensor blk.2.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.2.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.04.631.894 W AffinityWave: loader tensor blk.2.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+0.04.785.062 W AffinityWave: loader tensor blk.3.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+0.05.018.515 W AffinityWave: loader tensor blk.3.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+0.05.139.226 W AffinityWave: loader tensor blk.3.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: GPU0 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU1 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU2 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU3 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU0 T64 MMVQ decode path engaged
+AffinityWave: GPU1 T64 MMVQ decode path engaged
+AffinityWave: GPU2 T64 MMVQ decode path engaged
+AffinityWave: GPU3 T64 MMVQ decode path engaged
+0.26.249.487 I llama_completion: llama threadpool init, n_threads = 12
+0.26.252.113 I llama_completion: chat template is available, enabling conversation mode (disable it with -no-cnv)
+0.26.252.116 W *** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
+0.26.252.195 I llama_completion: chat template example:
+<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+
+0.26.252.195 I 
+0.26.252.271 I system_info: n_threads = 12 (n_threads_batch = 12) / 24 | CUDA : ARCHS = 600 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.26.252.274 I 
+0.26.252.403 I llama_completion: interactive mode on.
+0.26.252.408 I sampler seed: 1234
+0.26.252.420 I sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = -1
+	top_k = 1, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.26.252.427 I sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+0.26.252.428 I generate: n_ctx = 2048, n_batch = 512, n_predict = 32, n_keep = 0
+0.26.252.428 I 
+0.26.252.428 I == Running in interactive mode. ==
+0.26.252.428 I  - Press Ctrl+C to interject at any time.
+0.26.252.429 I  - Press Return to return control to the AI.
+ - To return control without starting a new line, end your input with '/'.
+ - If you want to submit another line, end your input with '\'.
+0.26.252.429 I  - Not using system message. To change it, set a different value via -sys PROMPT
+0.26.252.429 I 
+AffinityWave: GPU0 device-plan weight 0x7ebfa2f6ab00 T64=1
+AffinityWave: GPU0 M64 split-K2 device-plan path engaged
+AffinityWave: GPU1 device-plan weight 0x7ebd6cf6ab00 T64=1
+AffinityWave: GPU1 M64 split-K2 device-plan path engaged
+AffinityWave: GPU2 device-plan weight 0x7ebb36f6ab00 T64=1
+AffinityWave: GPU2 M64 split-K2 device-plan path engaged
+AffinityWave: GPU3 device-plan weight 0x7eb900f6ab00 T64=1
+AffinityWave: GPU3 M64 split-K2 device-plan path engaged
+0.26.882.572 I common_perf_print:    sampling time =      10.95 ms
+0.26.882.573 I common_perf_print:    samplers time =       2.24 ms /    23 tokens
+0.26.882.578 I common_perf_print:        load time =   25042.35 ms
+0.26.882.580 I common_perf_print: prompt eval time =     247.63 ms /     9 tokens (   27.51 ms per token,    36.34 tokens per second)
+0.26.882.582 I common_perf_print:        eval time =     371.05 ms /    13 runs   (   28.54 ms per token,    35.04 tokens per second)
+0.26.882.583 I common_perf_print:       total time =     633.09 ms /    22 tokens
+0.26.882.584 I common_perf_print: unaccounted time =       3.47 ms /   0.5 %      (total - sampling - prompt eval - eval) / (total)
+0.26.882.584 I common_perf_print:    graphs reused =         12

@@ -1,70 +1,79 @@
-# AffinityWave Phase-1 prototype
+# AffinityWave private research prototype
 
-AffinityWave is an experimental Qwen3.6-35B-A3B prefill backend for four
-Tesla P100 PCIe GPUs. The current implementation is a Phase-1 springboard, not
-an end-to-end wavefront scheduler. Ordinary model graphs continue to use the
-existing EP4 path.
+AffinityWave explores a four-lane diagonal prefill schedule and owner-routed
+Mixture-of-Experts service for Qwen3.6-35B-A3B Q8_0 on four Tesla P100 PCIe
+GPUs. This branch is a private collaboration snapshot rooted at the locally
+banked checkpoint.
 
-The prototype adds:
+## Read this first
 
-- strict opt-in configuration and placement-manifest validation;
-- a backend proc-address entry for an isolated cross-layer expert service;
-- one grouped native-Q8 service per gate, up, and down projection;
-- descriptors carrying layer, expert, input, weight, output, and row offsets;
-- F32 owner requests by default, optional BF16 requests, and fixed-order BF16
-  owner partials;
-- request packing, SwiGLU, owner aggregation, stage timing, a synthetic
-  reference check, and a four-GPU benchmark.
+The headline result has narrow semantics:
 
-It does not yet implement dense/hot-expert loading, the 40x4 diagonal scheduler,
-state corridors, append-prefill, or decode-state normalization. Enabling the
-prototype therefore logs that normal model execution remains on EP4.
+- pp8128 service benchmark mean: 2874.531 ms, or 2827.6 tok/s;
+- the benchmark intentionally withholds model output and returns an aborted
+  status after timing;
+- the 40-layer by 4-lane path does not return validated logits;
+- the exactness check covers the isolated expert service and deterministic
+  BF16 owner partials, not the complete wavefront;
+- append-prefill, decode-state normalization, and production request handling
+  are not implemented.
 
-## Build
+Do not compare 2827.6 tok/s with an ordinary end-to-end llama.cpp result. It is
+a projected service rate from a benchmark-only execution path.
 
-Use an isolated sm_60 build. The project build used for the registered result
-was configured with CUDA, Flash Attention, and NCCL and produced both
-`llama-affinity-wave-bench` and `llama-bench`.
+## Checkpoint identity
 
-## Controls
+| Item | Value |
+|---|---|
+| Parent commit | `05dcabf9a97b8a91bec5621d2b4c5ce1ce9b2ca8` |
+| AffinityWave checkpoint | `9d3983b89952c7fc1c6aa38fc1a7bd3182992382` |
+| Checkpoint tree | `acbecf68f512212b95015540e3774864bf935aed` |
+| Source delta | 14 files, 4,979 insertions, 71 deletions |
+| Model format | exact Q8_0 weights only |
+| Target hardware | exactly four CUDA compute-capability 6.0 GPUs |
 
-The benchmark requires:
+## Documentation
 
-```text
-GGML_CUDA_AFFINITY_WAVE=1
-GGML_CUDA_AW_MAP=/absolute/path/to/placement-hot16.json
-GGML_CUDA_AW_WIRE=f32|bf16
-GGML_CUDA_AW_CHECK=1
-```
+- [Architecture](affinity-wave/ARCHITECTURE.md)
+- [Current status and measured evidence](affinity-wave/STATUS.md)
+- [Complete experiment and dead-end log](affinity-wave/EXPERIMENTS.md)
+- [Build and reproduction guide](affinity-wave/REPRODUCTION.md)
+- [Private collaboration guide](affinity-wave/COLLABORATION.md)
+- [Curated artifact index](affinity-wave/artifacts/README.md)
+- [Raw experiment archive](affinity-wave/archive/README.md)
 
-`GGML_CUDA_AW_WIRE` defaults to `f32`. Explicit AffinityWave mode rejects a
-missing or malformed manifest, a non-four-GPU visible set, non-sm_60 devices,
-and unsupported wire formats. The v1 manifest validator checks all 40 layers,
-all 256 primary owners per layer, exactly 64 primaries per GPU, 16 unique hot
-experts, architecture metadata, and the GGUF digest format.
+## What the checkpoint contains
 
-## Benchmark semantics
+- strict opt-in hardware and placement-manifest validation;
+- native-Q8 T64/K32 expert-weight repacking;
+- M64 split-K2, M32, and M16 expert projection paths;
+- deterministic F32 or BF16 request packing and BF16 owner partials;
+- four-GPU isolated expert-service benchmark with exact synthetic checks;
+- benchmark-only dense token lanes, a 40-layer diagonal schedule, state
+  corridors, and chunked gated-delta-net execution;
+- graph inspection, timing, and placement hooks needed for continued research.
 
-The registered shape uses four active cells, 2048 tokens per cell, two routes
-per owner token (top-8 divided across four owners), and 256 cross-layer work
-descriptors per GPU. Each timed iteration includes:
+Ordinary model execution still falls back to the existing EP4 path outside the
+benchmark-specific controls.
 
-1. packing 8192 owner requests in the selected wire format;
-2. native-Q8 gate and up projections (`K=2048`, `N=512`);
-3. SwiGLU;
-4. native-Q8 down projection (`K=512`, `N=2048`);
-5. deterministic two-route accumulation and BF16 response rounding.
+## Research verdict
 
-All four devices run concurrently. The reported effective TFLOP/s divides the
-fixed expert arithmetic by the complete timed service, not just GEMM time.
+The original feasibility gate was a NO-GO. The optimistic model required about
+7.0 effective TFLOP/s/GPU from the complete expert service to have useful
+margin. The exact retained service measured about 5.13 to 5.29 TFLOP/s/GPU,
+and the service-only wave benchmark reached about 2828 tok/s rather than the
+3500 to 4000 tok/s target.
 
-## Current result
+The checkpoint is published privately so collaborators can inspect the design,
+reproduce the measurements, and seek a material breakthrough. It is not a
+claim that the architecture is ready to integrate.
 
-The F32 path is bit-exact against the deterministic BF16 owner-partial check on
-all four GPUs. The best retained kernel reaches 4.81 TFLOP/s on the slowest GPU
-for the registered four-cell shape, below the 5.5 Phase-1 gate. The measured
-PCIe copy-engine gate on the same rig remains 11.96 GB/s under full GEMM load.
+## Provenance and AI assistance
 
-The result is intentionally reported as a failed performance gate. It is useful
-as a buildable service boundary and stage-timed baseline, but it is not evidence
-that the full backend reaches 3200 or 4000 prompt tokens/s.
+This repository preserves the llama.cpp history and MIT license. AffinityWave
+was developed as a user-directed private experiment with substantial AI
+assistance from Codex and with measurements and project context shared from
+Claude Code sessions. Human collaborators must independently understand and
+review the implementation before relying on it.
+
+No upstream pull request is intended.

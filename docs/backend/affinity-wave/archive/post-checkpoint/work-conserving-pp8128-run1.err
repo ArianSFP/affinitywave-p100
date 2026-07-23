@@ -1,0 +1,70 @@
+AffinityWave: expert service enabled; map=/home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-hot16.json wire=bf16 layout=t64k32 down-cache=0 m64-split=2 home=layer check=1
+AffinityWave: in-place T64 expert loading, M64 plan prefill, and T64 MMVQ decode enabled
+ggml_cuda_init: found 4 CUDA devices (Total VRAM: 65077 MiB):
+  Device 0: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 1: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 2: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 3: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+AffinityWave: loading EPLB map /home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-primary.eplb
+AffinityWave: loaded EPLB layers=40
+AffinityWave: meta set probe blk.0.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU0 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU1 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU2 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU3 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: meta set probe blk.0.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta set probe blk.0.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.1.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: meta set probe blk.1.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.1.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.2.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: meta set probe blk.2.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: GPU0 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU1 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU2 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU3 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: pinned lane 0 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=47.7 MiB
+AffinityWave: pre-capturing exact cell graphs with 2 untimed wave passes
+AffinityWave: live service entered cells=1
+AffinityWave: live service scratch ready max_tokens=2032
+AffinityWave: live service inputs queued
+AffinityWave: live service owners queued
+AffinityWave: live service first call complete
+AffinityWave: dense lane microbench mode=service tokens=8128 cells=160 corridors=668.4 MiB elapsed=3015.671 ms projected=2695.3 tok/s; output withheld
+test_prompt: failed to decode prompt batch, res = 2
+llama_bench: error: failed to run prompt warmup

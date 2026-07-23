@@ -1,3 +1,20 @@
+# Private AffinityWave collaboration snapshot
+
+> [!IMPORTANT]
+> This private repository contains an experimental, AI-assisted llama.cpp
+> derivative for Qwen3.6-35B-A3B Q8_0 prefill on four Tesla P100 PCIe GPUs.
+> It is not an upstream contribution and must not be submitted to llama.cpp
+> without a human redesign, independent review, and compliance with upstream's
+> contribution policy.
+
+Start with [the AffinityWave status and documentation index](docs/backend/AFFINITY_WAVE.md).
+The banked `2827.6 tok/s` result is an output-withheld service projection, not
+end-to-end model throughput and not validated logits. The current checkpoint
+is useful as a buildable research springboard, not a production backend.
+
+The remainder of this file is the README inherited from llama.cpp at the
+prototype's parent revision.
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)

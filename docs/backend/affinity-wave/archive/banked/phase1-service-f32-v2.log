@@ -1,0 +1,15 @@
+RUN START 2026-07-22 23:13:57 UTC
+git 05dcabf9a + uncommitted TAG_AFFINITY_WAVE Phase-1 vector-load prototype
+command: env -i <CUDA/NCCL/AffinityWave env> taskset --cpu-list 0-11 llama-affinity-wave-bench --tokens-per-cell 2048 --repeats 12
+AffinityWave: Phase-1 expert-service prototype enabled; map=/home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-hot16.json wire=f32 check=1
+AffinityWave: end-to-end wave scheduling is not active in Phase 1; ordinary model graphs use EP4
+ggml_cuda_init: found 4 CUDA devices (Total VRAM: 65077 MiB):
+  Device 0: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 1: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 2: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 3: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+{"device":0,"elapsed_ms":20.898268,"effective_tflops":4.932429,"request_gib_s":2.990678,"device_bytes":1258530816,"free_bytes_after":15521480704,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"device":1,"elapsed_ms":21.445826,"effective_tflops":4.806493,"request_gib_s":2.914320,"device_bytes":1258530816,"free_bytes_after":15521546240,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"device":2,"elapsed_ms":21.349737,"effective_tflops":4.828126,"request_gib_s":2.927437,"device_bytes":1258530816,"free_bytes_after":15521546240,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"device":3,"elapsed_ms":21.643476,"effective_tflops":4.762600,"request_gib_s":2.887706,"device_bytes":1258530816,"free_bytes_after":15521546240,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"summary":"AffinityWave Phase 1","min_effective_tflops":4.762600,"gate_tflops":5.5,"passed":false}

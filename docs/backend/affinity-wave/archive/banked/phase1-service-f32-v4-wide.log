@@ -1,0 +1,15 @@
+RUN START 2026-07-22 23:18:57 UTC
+git 05dcabf9a + uncommitted TAG_AFFINITY_WAVE Phase-1 32x128 prototype
+command: env -i <CUDA/NCCL/AffinityWave env> taskset --cpu-list 0-11 llama-affinity-wave-bench --tokens-per-cell 2048 --repeats 12
+AffinityWave: Phase-1 expert-service prototype enabled; map=/home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-hot16.json wire=f32 check=1
+AffinityWave: end-to-end wave scheduling is not active in Phase 1; ordinary model graphs use EP4
+ggml_cuda_init: found 4 CUDA devices (Total VRAM: 65077 MiB):
+  Device 0: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 1: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 2: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 3: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+{"device":0,"elapsed_ms":25.501299,"effective_tflops":4.042116,"request_gib_s":2.450856,"pack_ms":0.258208,"gate_ms":7.690464,"up_ms":7.679392,"swiglu_ms":0.186752,"down_ms":8.220576,"reduce_ms":0.522912,"device_bytes":1258530816,"free_bytes_after":15521480704,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"device":1,"elapsed_ms":24.737846,"effective_tflops":4.166863,"request_gib_s":2.526493,"pack_ms":0.259168,"gate_ms":7.660096,"up_ms":7.657408,"swiglu_ms":0.185312,"down_ms":8.026752,"reduce_ms":0.521344,"device_bytes":1258530816,"free_bytes_after":15521546240,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"device":2,"elapsed_ms":24.643904,"effective_tflops":4.182747,"request_gib_s":2.536124,"pack_ms":0.260032,"gate_ms":7.663104,"up_ms":7.661728,"swiglu_ms":0.185120,"down_ms":8.049120,"reduce_ms":0.520544,"device_bytes":1258530816,"free_bytes_after":15521546240,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"device":3,"elapsed_ms":24.889406,"effective_tflops":4.141490,"request_gib_s":2.511109,"pack_ms":0.259968,"gate_ms":7.692224,"up_ms":7.700992,"swiglu_ms":0.185088,"down_ms":8.217248,"reduce_ms":0.521120,"device_bytes":1258530816,"free_bytes_after":15521546240,"descriptors":256,"route_rows":16384,"check_ran":1,"check_passed":1,"check_expected":48020,"check_observed":48020}
+{"summary":"AffinityWave Phase 1","min_effective_tflops":4.042116,"gate_tflops":5.5,"passed":false}

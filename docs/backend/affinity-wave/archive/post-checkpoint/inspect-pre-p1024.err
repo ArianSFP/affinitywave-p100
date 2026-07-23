@@ -1,0 +1,777 @@
+AffinityWave: expert service enabled; map=/home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-hot16.json wire=bf16 layout=t64k32 down-cache=0 m64-split=2 home=layer check=1
+AffinityWave: in-place T64 expert loading, M64 plan prefill, and T64 MMVQ decode enabled
+ggml_cuda_init: found 4 CUDA devices (Total VRAM: 65077 MiB):
+  Device 0: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 1: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 2: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 3: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+AffinityWave: loading EPLB map /home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-primary.eplb
+AffinityWave: loaded EPLB layers=40
+AffinityWave: meta set probe blk.0.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,64,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU0 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU1 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU2 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU3 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,64
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: meta set probe blk.0.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,64
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta set probe blk.0.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.1.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: meta set probe blk.1.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.1.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.2.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: meta set probe blk.2.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: GPU0 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU1 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU2 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU3 T64 expert tensors=120 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: graph census nodes=3726 leafs=0
+AffinityWave: graph node=0 op=RMS_NORM name=norm-0 ne=2048,1024,1,1 split=1 src=Meta(CUDA0,CUDA1,CUDA2,CUDA3)#model.input_embed#0||
+AffinityWave: graph node=1 op=MUL name=attn_norm-0 ne=2048,1024,1,1 split=1 src=norm-0|blk.0.attn_norm.weight|
+AffinityWave: graph node=2 op=RESHAPE name=cache_r_l0 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l0||
+AffinityWave: graph node=3 op=VIEW name=cache_r_l0 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l0 (reshaped)||
+AffinityWave: graph node=4 op=SCALE name=cache_r_l0 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l0 (reshaped) (view)||
+AffinityWave: graph node=5 op=VIEW name= (view) ne=1,1,1,1 split=UNKNOWN src=leaf_5||
+AffinityWave: graph node=6 op=GET_ROWS name=conv_states-0 ne=24576,1,1,1 split=MIRRORED src=cache_r_l0 (reshaped)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0|
+AffinityWave: graph node=7 op=VIEW name= (view) ne=0,1,1,1 split=UNKNOWN src=leaf_5||
+AffinityWave: graph node=8 op=GET_ROWS name=node_9 ne=24576,0,1,1 split=UNKNOWN src=cache_r_l0 (reshaped)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0|
+AffinityWave: graph node=9 op=VIEW name=cache_r_l0 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l0||
+AffinityWave: graph node=10 op=CPY name=cache_r_l0 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_9|cache_r_l0 (view)|
+AffinityWave: graph node=11 op=RESHAPE name=conv_states_reshaped-0 ne=3,8192,1,1 split=MIRRORED src=conv_states-0||
+AffinityWave: graph node=12 op=MUL_MAT name=node_13 ne=8192,1024,1,1 split=1 src=blk.0.attn_qkv.weight|attn_norm-0|
+AffinityWave: graph node=13 op=RESHAPE name=linear_attn_qkv_mixed-0 ne=8192,1024,1,1 split=1 src=node_13||
+AffinityWave: graph node=14 op=TRANSPOSE name=qkv_mixed_transposed-0 ne=1024,8192,1,1 split=0 src=linear_attn_qkv_mixed-0||
+AffinityWave: graph node=15 op=CONCAT name=conv_input-0 ne=1027,8192,1,1 split=0 src=conv_states_reshaped-0|qkv_mixed_transposed-0|
+AffinityWave: graph node=16 op=VIEW name=conv_state_last-0 ne=3,8192,1,1 split=MIRRORED src=conv_input-0||
+AffinityWave: graph node=17 op=VIEW name=conv_state_update-0 ne=24576,1,1,1 split=MIRRORED src=cache_r_l0||
+AffinityWave: graph node=18 op=CPY name=conv_state_update-0 (copy of conv_state_last-0) ne=24576,1,1,1 split=MIRRORED src=conv_state_last-0|conv_state_update-0|
+AffinityWave: graph node=19 op=RESHAPE name=cache_s_l0 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l0||
+AffinityWave: graph node=20 op=VIEW name=cache_s_l0 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l0 (reshaped)||
+AffinityWave: graph node=21 op=SCALE name=cache_s_l0 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l0 (reshaped) (view)||
+AffinityWave: graph node=22 op=GET_ROWS name=node_23 ne=524288,1,1,1 split=MIRRORED src=cache_s_l0 (reshaped)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0|
+AffinityWave: graph node=23 op=GET_ROWS name=node_24 ne=524288,0,1,1 split=UNKNOWN src=cache_s_l0 (reshaped)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0|
+AffinityWave: graph node=24 op=VIEW name=cache_s_l0 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l0||
+AffinityWave: graph node=25 op=CPY name=cache_s_l0 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_24|cache_s_l0 (view)|
+AffinityWave: graph node=26 op=SSM_CONV name=conv_output_raw-0 ne=8192,1024,1,1 split=1 src=conv_input-0|blk.0.ssm_conv1d.weight|
+AffinityWave: graph node=27 op=UNARY name=conv_output_silu-0 ne=8192,1024,1,1 split=1 src=conv_output_raw-0||
+AffinityWave: graph node=28 op=VIEW name=q_conv-0 ne=128,16,1024,1 split=2 src=conv_output_silu-0||
+AffinityWave: graph node=29 op=L2_NORM name=q_conv_predelta-0 ne=128,16,1024,1 split=2 src=q_conv-0||
+AffinityWave: graph node=30 op=VIEW name=k_conv-0 ne=128,16,1024,1 split=2 src=conv_output_silu-0||
+AffinityWave: graph node=31 op=L2_NORM name=k_conv_predelta-0 ne=128,16,1024,1 split=2 src=k_conv-0||
+AffinityWave: graph node=32 op=VIEW name=v_conv_predelta-0 ne=128,32,1024,1 split=2 src=conv_output_silu-0||
+AffinityWave: graph node=33 op=MUL_MAT name=node_34 ne=32,1024,1,1 split=1 src=blk.0.ssm_alpha.weight|attn_norm-0|
+AffinityWave: graph node=34 op=RESHAPE name=alpha-0 ne=32,1024,1,1 split=1 src=node_34||
+AffinityWave: graph node=35 op=ADD name=node_36 ne=32,1024,1,1 split=1 src=alpha-0|blk.0.ssm_dt.bias|
+AffinityWave: graph node=36 op=UNARY name=a_softplus-0 ne=32,1024,1,1 split=1 src=node_36||
+AffinityWave: graph node=37 op=MUL name=gate-0 ne=32,1024,1,1 split=1 src=a_softplus-0|blk.0.ssm_a|
+AffinityWave: graph node=38 op=RESHAPE name=gate-0 (reshaped) ne=1,32,1024,1 split=2 src=gate-0||
+AffinityWave: graph node=39 op=MUL_MAT name=node_40 ne=32,1024,1,1 split=1 src=blk.0.ssm_beta.weight|attn_norm-0|
+AffinityWave: graph node=40 op=RESHAPE name=beta-0 ne=1,32,1024,1 split=2 src=node_40||
+AffinityWave: graph node=41 op=UNARY name=beta_sigmoid-0 ne=1,32,1024,1 split=2 src=beta-0||
+AffinityWave: graph node=42 op=RESHAPE name=state_predelta-0 ne=128,128,32,1 split=MIRRORED src=node_23||
+AffinityWave: graph node=43 op=GATED_DELTA_NET name=__fgdn_ch__-0 ne=4096,1152,1,1 split=1 src=q_conv_predelta-0|k_conv_predelta-0|v_conv_predelta-0
+AffinityWave: graph node=44 op=VIEW name=new_state-0 ne=128,128,32,1 split=MIRRORED src=__fgdn_ch__-0||
+AffinityWave: graph node=45 op=VIEW name=cache_s_l0 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l0||
+AffinityWave: graph node=46 op=CPY name=cache_s_l0 (view) (copy of new_state-0) ne=524288,1,1,1 split=MIRRORED src=new_state-0|cache_s_l0 (view)|
+AffinityWave: graph node=47 op=VIEW name=attn_output-0 ne=128,32,1024,1 split=2 src=__fgdn_ch__-0||
+AffinityWave: graph node=48 op=RMS_NORM name=norm-0 ne=128,32,1024,1 split=2 src=attn_output-0||
+AffinityWave: graph node=49 op=MUL name=node_50 ne=128,32,1024,1 split=2 src=norm-0|blk.0.ssm_norm.weight|
+AffinityWave: graph node=50 op=MUL_MAT name=z-0 ne=4096,1024,1,1 split=1 src=blk.0.attn_gate.weight|attn_norm-0|
+AffinityWave: graph node=51 op=RESHAPE name=z-0 (reshaped) ne=128,32,1024,1 split=2 src=z-0||
+AffinityWave: graph node=52 op=UNARY name=node_53 ne=128,32,1024,1 split=2 src=z-0 (reshaped)||
+AffinityWave: graph node=53 op=MUL name=node_54 ne=128,32,1024,1 split=2 src=node_50|node_53|
+AffinityWave: graph node=54 op=RESHAPE name=final_output-0 ne=4096,1024,1,1 split=1 src=node_54||
+AffinityWave: graph node=55 op=MUL_MAT name=linear_attn_out-0 ne=2048,1024,1,1 split=1 src=blk.0.ssm_out.weight|final_output-0|
+AffinityWave: graph node=56 op=RESHAPE name=linear_attn_out-0 (reshaped) ne=2048,1024,1,1 split=1 src=linear_attn_out-0||
+AffinityWave: graph node=57 op=ADD name=attn_residual-0 ne=2048,1024,1,1 split=1 src=linear_attn_out-0 (reshaped)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#model.input_embed#0|
+AffinityWave: graph node=58 op=RMS_NORM name=norm-0 ne=2048,1024,1,1 split=1 src=attn_residual-0||
+AffinityWave: graph node=59 op=MUL name=attn_post_norm-0 ne=2048,1024,1,1 split=1 src=norm-0|blk.0.post_attention_norm.weight|
+AffinityWave: graph node=60 op=MUL_MAT name=ffn_moe_logits-0 ne=256,1024,1,1 split=1 src=blk.0.ffn_gate_inp.weight|attn_post_norm-0|
+AffinityWave: graph node=61 op=SOFT_MAX name=ffn_moe_probs-0 ne=256,1024,1,1 split=1 src=ffn_moe_logits-0||
+AffinityWave: graph node=62 op=RESHAPE name=ffn_moe_probs-0 (reshaped) ne=1,256,1024,1 split=2 src=ffn_moe_probs-0||
+AffinityWave: graph node=63 op=ARGSORT name=ffn_moe_argsort-0 ne=256,1024,1,1 split=1 src=ffn_moe_probs-0||
+AffinityWave: graph node=64 op=VIEW name=ffn_moe_topk-0 ne=8,1024,1,1 split=1 src=ffn_moe_argsort-0||
+AffinityWave: graph node=65 op=GET_ROWS name=ffn_moe_weights-0 ne=1,8,1024,1 split=2 src=ffn_moe_probs-0 (reshaped)|ffn_moe_topk-0|
+AffinityWave: graph node=66 op=RESHAPE name=ffn_moe_weights-0 (reshaped) ne=8,1024,1,1 split=1 src=ffn_moe_weights-0||
+AffinityWave: graph node=67 op=SUM_ROWS name=ffn_moe_weights_sum-0 ne=1,1024,1,1 split=1 src=ffn_moe_weights-0 (reshaped)||
+AffinityWave: graph node=68 op=CLAMP name=ffn_moe_weights_sum_clamped-0 ne=1,1024,1,1 split=1 src=ffn_moe_weights_sum-0||
+AffinityWave: graph node=69 op=DIV name=ffn_moe_weights_norm-0 ne=8,1024,1,1 split=1 src=ffn_moe_weights-0 (reshaped)|ffn_moe_weights_sum_clamped-0|
+AffinityWave: graph node=70 op=RESHAPE name=ffn_moe_weights_norm-0 (reshaped) ne=1,8,1024,1 split=2 src=ffn_moe_weights_norm-0||
+AffinityWave: graph node=71 op=RESHAPE name=attn_post_norm-0 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-0||
+AffinityWave: graph node=72 op=MUL_MAT_ID name=ffn_moe_gate-0 ne=512,8,1024,1 split=2 src=blk.0.ffn_gate_exps.weight|attn_post_norm-0 (reshaped)|ffn_moe_topk-0
+AffinityWave: graph node=73 op=MUL_MAT_ID name=ffn_moe_up-0 ne=512,8,1024,1 split=2 src=blk.0.ffn_up_exps.weight|attn_post_norm-0 (reshaped)|ffn_moe_topk-0
+AffinityWave: graph node=74 op=GLU name=ffn_moe_swiglu-0 ne=512,8,1024,1 split=2 src=ffn_moe_gate-0|ffn_moe_up-0|
+AffinityWave: graph node=75 op=MUL_MAT_ID name=ffn_moe_down-0 ne=2048,8,1024,1 split=2 src=blk.0.ffn_down_exps.weight|ffn_moe_swiglu-0|ffn_moe_topk-0
+AffinityWave: graph node=76 op=MUL name=ffn_moe_weighted-0 ne=2048,8,1024,1 split=2 src=ffn_moe_down-0|ffn_moe_weights_norm-0 (reshaped)|
+AffinityWave: graph node=77 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=78 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=79 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=80 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=81 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=82 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=83 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=84 op=VIEW name=ffn_moe_weighted-0 (view) ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0||
+AffinityWave: graph node=85 op=ADD name=node_86 ne=2048,1024,1,1 split=1 src=ffn_moe_weighted-0 (view)|ffn_moe_weighted-0 (view)|
+AffinityWave: graph node=86 op=ADD name=node_87 ne=2048,1024,1,1 split=1 src=node_86|ffn_moe_weighted-0 (view)|
+AffinityWave: graph node=87 op=ADD name=node_88 ne=2048,1024,1,1 split=1 src=node_87|ffn_moe_weighted-0 (view)|
+AffinityWave: graph node=88 op=ADD name=node_89 ne=2048,1024,1,1 split=1 src=node_88|ffn_moe_weighted-0 (view)|
+AffinityWave: graph node=89 op=ADD name=node_90 ne=2048,1024,1,1 split=1 src=node_89|ffn_moe_weighted-0 (view)|
+AffinityWave: graph node=90 op=ADD name=node_91 ne=2048,1024,1,1 split=1 src=node_90|ffn_moe_weighted-0 (view)|
+AffinityWave: graph node=91 op=ADD name=ffn_moe_out-0 ne=2048,1024,1,1 split=1 src=node_91|ffn_moe_weighted-0 (view)|
+AffinityWave: graph node=92 op=MUL_MAT name=ffn_gate-0 ne=512,1024,1,1 split=1 src=blk.0.ffn_gate_shexp.weight|attn_post_norm-0|
+AffinityWave: graph node=93 op=MUL_MAT name=ffn_up-0 ne=512,1024,1,1 split=1 src=blk.0.ffn_up_shexp.weight|attn_post_norm-0|
+AffinityWave: graph node=94 op=GLU name=ffn_swiglu-0 ne=512,1024,1,1 split=1 src=ffn_gate-0|ffn_up-0|
+AffinityWave: graph node=95 op=MUL_MAT name=ffn_shexp-0 ne=2048,1024,1,1 split=1 src=blk.0.ffn_down_shexp.weight|ffn_swiglu-0|
+AffinityWave: graph node=96 op=MUL_MAT name=shared_expert_gate-0 ne=1,1024,1,1 split=1 src=blk.0.ffn_gate_inp_shexp.weight|attn_post_norm-0|
+AffinityWave: graph node=97 op=UNARY name=shared_expert_gate_sigmoid-0 ne=1,1024,1,1 split=1 src=shared_expert_gate-0||
+AffinityWave: graph node=98 op=MUL name=ffn_shexp_gated-0 ne=2048,1024,1,1 split=1 src=ffn_shexp-0|shared_expert_gate_sigmoid-0|
+AffinityWave: graph node=99 op=ADD name=ffn_out-0 ne=2048,1024,1,1 split=1 src=ffn_moe_out-0|ffn_shexp_gated-0|
+AffinityWave: graph node=100 op=ADD name=l_out-0 ne=2048,1024,1,1 split=1 src=ffn_out-0|attn_residual-0|
+AffinityWave: graph node=101 op=RMS_NORM name=norm-1 ne=2048,1024,1,1 split=1 src=l_out-0||
+AffinityWave: graph node=102 op=MUL name=attn_norm-1 ne=2048,1024,1,1 split=1 src=norm-1|blk.1.attn_norm.weight|
+AffinityWave: graph node=103 op=RESHAPE name=cache_r_l1 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l1||
+AffinityWave: graph node=104 op=VIEW name=cache_r_l1 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l1 (reshaped)||
+AffinityWave: graph node=105 op=SCALE name=cache_r_l1 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l1 (reshaped) (view)||
+AffinityWave: graph node=106 op=GET_ROWS name=conv_states-1 ne=24576,1,1,1 split=MIRRORED src=cache_r_l1 (reshaped)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0|
+AffinityWave: graph node=107 op=GET_ROWS name=node_108 ne=24576,0,1,1 split=UNKNOWN src=cache_r_l1 (reshaped)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0|
+AffinityWave: graph node=108 op=VIEW name=cache_r_l1 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l1||
+AffinityWave: graph node=109 op=CPY name=cache_r_l1 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_108|cache_r_l1 (view)|
+AffinityWave: graph node=118 op=RESHAPE name=cache_s_l1 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l1||
+AffinityWave: graph node=119 op=VIEW name=cache_s_l1 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l1 (reshaped)||
+AffinityWave: graph node=120 op=SCALE name=cache_s_l1 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l1 (reshaped) (view)||
+AffinityWave: graph node=123 op=VIEW name=cache_s_l1 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l1||
+AffinityWave: graph node=124 op=CPY name=cache_s_l1 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_123|cache_s_l1 (view)|
+AffinityWave: graph node=144 op=VIEW name=cache_s_l1 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l1||
+AffinityWave: graph node=145 op=CPY name=cache_s_l1 (view) (copy of new_state-1) ne=524288,1,1,1 split=MIRRORED src=new_state-1|cache_s_l1 (view)|
+AffinityWave: graph node=153 op=RESHAPE name=final_output-1 ne=4096,1024,1,1 split=1 src=node_153||
+AffinityWave: graph node=158 op=MUL name=attn_post_norm-1 ne=2048,1024,1,1 split=1 src=norm-1|blk.1.post_attention_norm.weight|
+AffinityWave: graph node=170 op=RESHAPE name=attn_post_norm-1 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-1||
+AffinityWave: graph node=190 op=ADD name=ffn_moe_out-1 ne=2048,1024,1,1 split=1 src=node_190|ffn_moe_weighted-1 (view)|
+AffinityWave: graph node=199 op=ADD name=l_out-1 ne=2048,1024,1,1 split=1 src=ffn_out-1|attn_residual-1|
+AffinityWave: graph node=202 op=RESHAPE name=cache_r_l2 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l2||
+AffinityWave: graph node=203 op=VIEW name=cache_r_l2 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l2 (reshaped)||
+AffinityWave: graph node=204 op=SCALE name=cache_r_l2 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l2 (reshaped) (view)||
+AffinityWave: graph node=207 op=VIEW name=cache_r_l2 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l2||
+AffinityWave: graph node=208 op=CPY name=cache_r_l2 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_207|cache_r_l2 (view)|
+AffinityWave: graph node=217 op=RESHAPE name=cache_s_l2 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l2||
+AffinityWave: graph node=218 op=VIEW name=cache_s_l2 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l2 (reshaped)||
+AffinityWave: graph node=219 op=SCALE name=cache_s_l2 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l2 (reshaped) (view)||
+AffinityWave: graph node=222 op=VIEW name=cache_s_l2 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l2||
+AffinityWave: graph node=223 op=CPY name=cache_s_l2 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_222|cache_s_l2 (view)|
+AffinityWave: graph node=243 op=VIEW name=cache_s_l2 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l2||
+AffinityWave: graph node=244 op=CPY name=cache_s_l2 (view) (copy of new_state-2) ne=524288,1,1,1 split=MIRRORED src=new_state-2|cache_s_l2 (view)|
+AffinityWave: graph node=252 op=RESHAPE name=final_output-2 ne=4096,1024,1,1 split=1 src=node_252||
+AffinityWave: graph node=257 op=MUL name=attn_post_norm-2 ne=2048,1024,1,1 split=1 src=norm-2|blk.2.post_attention_norm.weight|
+AffinityWave: graph node=269 op=RESHAPE name=attn_post_norm-2 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-2||
+AffinityWave: graph node=289 op=ADD name=ffn_moe_out-2 ne=2048,1024,1,1 split=1 src=node_289|ffn_moe_weighted-2 (view)|
+AffinityWave: graph node=298 op=ADD name=l_out-2 ne=2048,1024,1,1 split=1 src=ffn_out-2|attn_residual-2|
+AffinityWave: graph node=314 op=SET_ROWS name=cache_k_l3 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-3 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l3
+AffinityWave: graph node=316 op=SET_ROWS name=cache_v_l3 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-3 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l3
+AffinityWave: graph node=319 op=VIEW name=cache_k_l3 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l3||
+AffinityWave: graph node=320 op=PERMUTE name=cache_k_l3 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l3 (view)||
+AffinityWave: graph node=321 op=VIEW name=cache_v_l3 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l3||
+AffinityWave: graph node=322 op=PERMUTE name=cache_v_l3 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l3 (view)||
+AffinityWave: graph node=332 op=MUL name=attn_post_norm-3 ne=2048,1024,1,1 split=1 src=norm-3|blk.3.post_attention_norm.weight|
+AffinityWave: graph node=344 op=RESHAPE name=attn_post_norm-3 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-3||
+AffinityWave: graph node=364 op=ADD name=ffn_moe_out-3 ne=2048,1024,1,1 split=1 src=node_364|ffn_moe_weighted-3 (view)|
+AffinityWave: graph node=373 op=ADD name=l_out-3 ne=2048,1024,1,1 split=1 src=ffn_out-3|attn_residual-3|
+AffinityWave: graph node=376 op=RESHAPE name=cache_r_l4 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l4||
+AffinityWave: graph node=377 op=VIEW name=cache_r_l4 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l4 (reshaped)||
+AffinityWave: graph node=378 op=SCALE name=cache_r_l4 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l4 (reshaped) (view)||
+AffinityWave: graph node=381 op=VIEW name=cache_r_l4 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l4||
+AffinityWave: graph node=382 op=CPY name=cache_r_l4 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_381|cache_r_l4 (view)|
+AffinityWave: graph node=391 op=RESHAPE name=cache_s_l4 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l4||
+AffinityWave: graph node=392 op=VIEW name=cache_s_l4 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l4 (reshaped)||
+AffinityWave: graph node=393 op=SCALE name=cache_s_l4 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l4 (reshaped) (view)||
+AffinityWave: graph node=396 op=VIEW name=cache_s_l4 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l4||
+AffinityWave: graph node=397 op=CPY name=cache_s_l4 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_396|cache_s_l4 (view)|
+AffinityWave: graph node=417 op=VIEW name=cache_s_l4 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l4||
+AffinityWave: graph node=418 op=CPY name=cache_s_l4 (view) (copy of new_state-4) ne=524288,1,1,1 split=MIRRORED src=new_state-4|cache_s_l4 (view)|
+AffinityWave: graph node=426 op=RESHAPE name=final_output-4 ne=4096,1024,1,1 split=1 src=node_426||
+AffinityWave: graph node=431 op=MUL name=attn_post_norm-4 ne=2048,1024,1,1 split=1 src=norm-4|blk.4.post_attention_norm.weight|
+AffinityWave: graph node=443 op=RESHAPE name=attn_post_norm-4 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-4||
+AffinityWave: graph node=463 op=ADD name=ffn_moe_out-4 ne=2048,1024,1,1 split=1 src=node_463|ffn_moe_weighted-4 (view)|
+AffinityWave: graph node=472 op=ADD name=l_out-4 ne=2048,1024,1,1 split=1 src=ffn_out-4|attn_residual-4|
+AffinityWave: graph node=475 op=RESHAPE name=cache_r_l5 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l5||
+AffinityWave: graph node=476 op=VIEW name=cache_r_l5 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l5 (reshaped)||
+AffinityWave: graph node=477 op=SCALE name=cache_r_l5 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l5 (reshaped) (view)||
+AffinityWave: graph node=480 op=VIEW name=cache_r_l5 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l5||
+AffinityWave: graph node=481 op=CPY name=cache_r_l5 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_480|cache_r_l5 (view)|
+AffinityWave: graph node=490 op=RESHAPE name=cache_s_l5 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l5||
+AffinityWave: graph node=491 op=VIEW name=cache_s_l5 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l5 (reshaped)||
+AffinityWave: graph node=492 op=SCALE name=cache_s_l5 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l5 (reshaped) (view)||
+AffinityWave: graph node=495 op=VIEW name=cache_s_l5 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l5||
+AffinityWave: graph node=496 op=CPY name=cache_s_l5 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_495|cache_s_l5 (view)|
+AffinityWave: graph node=516 op=VIEW name=cache_s_l5 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l5||
+AffinityWave: graph node=517 op=CPY name=cache_s_l5 (view) (copy of new_state-5) ne=524288,1,1,1 split=MIRRORED src=new_state-5|cache_s_l5 (view)|
+AffinityWave: graph node=525 op=RESHAPE name=final_output-5 ne=4096,1024,1,1 split=1 src=node_525||
+AffinityWave: graph node=530 op=MUL name=attn_post_norm-5 ne=2048,1024,1,1 split=1 src=norm-5|blk.5.post_attention_norm.weight|
+AffinityWave: graph node=542 op=RESHAPE name=attn_post_norm-5 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-5||
+AffinityWave: graph node=562 op=ADD name=ffn_moe_out-5 ne=2048,1024,1,1 split=1 src=node_562|ffn_moe_weighted-5 (view)|
+AffinityWave: graph node=571 op=ADD name=l_out-5 ne=2048,1024,1,1 split=1 src=ffn_out-5|attn_residual-5|
+AffinityWave: graph node=574 op=RESHAPE name=cache_r_l6 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l6||
+AffinityWave: graph node=575 op=VIEW name=cache_r_l6 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l6 (reshaped)||
+AffinityWave: graph node=576 op=SCALE name=cache_r_l6 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l6 (reshaped) (view)||
+AffinityWave: graph node=579 op=VIEW name=cache_r_l6 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l6||
+AffinityWave: graph node=580 op=CPY name=cache_r_l6 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_579|cache_r_l6 (view)|
+AffinityWave: graph node=589 op=RESHAPE name=cache_s_l6 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l6||
+AffinityWave: graph node=590 op=VIEW name=cache_s_l6 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l6 (reshaped)||
+AffinityWave: graph node=591 op=SCALE name=cache_s_l6 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l6 (reshaped) (view)||
+AffinityWave: graph node=594 op=VIEW name=cache_s_l6 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l6||
+AffinityWave: graph node=595 op=CPY name=cache_s_l6 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_594|cache_s_l6 (view)|
+AffinityWave: graph node=615 op=VIEW name=cache_s_l6 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l6||
+AffinityWave: graph node=616 op=CPY name=cache_s_l6 (view) (copy of new_state-6) ne=524288,1,1,1 split=MIRRORED src=new_state-6|cache_s_l6 (view)|
+AffinityWave: graph node=624 op=RESHAPE name=final_output-6 ne=4096,1024,1,1 split=1 src=node_624||
+AffinityWave: graph node=629 op=MUL name=attn_post_norm-6 ne=2048,1024,1,1 split=1 src=norm-6|blk.6.post_attention_norm.weight|
+AffinityWave: graph node=641 op=RESHAPE name=attn_post_norm-6 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-6||
+AffinityWave: graph node=661 op=ADD name=ffn_moe_out-6 ne=2048,1024,1,1 split=1 src=node_661|ffn_moe_weighted-6 (view)|
+AffinityWave: graph node=670 op=ADD name=l_out-6 ne=2048,1024,1,1 split=1 src=ffn_out-6|attn_residual-6|
+AffinityWave: graph node=686 op=SET_ROWS name=cache_k_l7 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-7 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l7
+AffinityWave: graph node=688 op=SET_ROWS name=cache_v_l7 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-7 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l7
+AffinityWave: graph node=691 op=VIEW name=cache_k_l7 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l7||
+AffinityWave: graph node=692 op=PERMUTE name=cache_k_l7 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l7 (view)||
+AffinityWave: graph node=693 op=VIEW name=cache_v_l7 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l7||
+AffinityWave: graph node=694 op=PERMUTE name=cache_v_l7 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l7 (view)||
+AffinityWave: graph node=704 op=MUL name=attn_post_norm-7 ne=2048,1024,1,1 split=1 src=norm-7|blk.7.post_attention_norm.weight|
+AffinityWave: graph node=716 op=RESHAPE name=attn_post_norm-7 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-7||
+AffinityWave: graph node=736 op=ADD name=ffn_moe_out-7 ne=2048,1024,1,1 split=1 src=node_736|ffn_moe_weighted-7 (view)|
+AffinityWave: graph node=745 op=ADD name=l_out-7 ne=2048,1024,1,1 split=1 src=ffn_out-7|attn_residual-7|
+AffinityWave: graph node=748 op=RESHAPE name=cache_r_l8 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l8||
+AffinityWave: graph node=749 op=VIEW name=cache_r_l8 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l8 (reshaped)||
+AffinityWave: graph node=750 op=SCALE name=cache_r_l8 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l8 (reshaped) (view)||
+AffinityWave: graph node=753 op=VIEW name=cache_r_l8 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l8||
+AffinityWave: graph node=754 op=CPY name=cache_r_l8 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_753|cache_r_l8 (view)|
+AffinityWave: graph node=763 op=RESHAPE name=cache_s_l8 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l8||
+AffinityWave: graph node=764 op=VIEW name=cache_s_l8 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l8 (reshaped)||
+AffinityWave: graph node=765 op=SCALE name=cache_s_l8 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l8 (reshaped) (view)||
+AffinityWave: graph node=768 op=VIEW name=cache_s_l8 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l8||
+AffinityWave: graph node=769 op=CPY name=cache_s_l8 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_768|cache_s_l8 (view)|
+AffinityWave: graph node=789 op=VIEW name=cache_s_l8 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l8||
+AffinityWave: graph node=790 op=CPY name=cache_s_l8 (view) (copy of new_state-8) ne=524288,1,1,1 split=MIRRORED src=new_state-8|cache_s_l8 (view)|
+AffinityWave: graph node=798 op=RESHAPE name=final_output-8 ne=4096,1024,1,1 split=1 src=node_798||
+AffinityWave: graph node=803 op=MUL name=attn_post_norm-8 ne=2048,1024,1,1 split=1 src=norm-8|blk.8.post_attention_norm.weight|
+AffinityWave: graph node=815 op=RESHAPE name=attn_post_norm-8 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-8||
+AffinityWave: graph node=835 op=ADD name=ffn_moe_out-8 ne=2048,1024,1,1 split=1 src=node_835|ffn_moe_weighted-8 (view)|
+AffinityWave: graph node=844 op=ADD name=l_out-8 ne=2048,1024,1,1 split=1 src=ffn_out-8|attn_residual-8|
+AffinityWave: graph node=847 op=RESHAPE name=cache_r_l9 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l9||
+AffinityWave: graph node=848 op=VIEW name=cache_r_l9 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l9 (reshaped)||
+AffinityWave: graph node=849 op=SCALE name=cache_r_l9 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l9 (reshaped) (view)||
+AffinityWave: graph node=852 op=VIEW name=cache_r_l9 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l9||
+AffinityWave: graph node=853 op=CPY name=cache_r_l9 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_852|cache_r_l9 (view)|
+AffinityWave: graph node=862 op=RESHAPE name=cache_s_l9 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l9||
+AffinityWave: graph node=863 op=VIEW name=cache_s_l9 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l9 (reshaped)||
+AffinityWave: graph node=864 op=SCALE name=cache_s_l9 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l9 (reshaped) (view)||
+AffinityWave: graph node=867 op=VIEW name=cache_s_l9 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l9||
+AffinityWave: graph node=868 op=CPY name=cache_s_l9 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_867|cache_s_l9 (view)|
+AffinityWave: graph node=888 op=VIEW name=cache_s_l9 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l9||
+AffinityWave: graph node=889 op=CPY name=cache_s_l9 (view) (copy of new_state-9) ne=524288,1,1,1 split=MIRRORED src=new_state-9|cache_s_l9 (view)|
+AffinityWave: graph node=897 op=RESHAPE name=final_output-9 ne=4096,1024,1,1 split=1 src=node_897||
+AffinityWave: graph node=902 op=MUL name=attn_post_norm-9 ne=2048,1024,1,1 split=1 src=norm-9|blk.9.post_attention_norm.weight|
+AffinityWave: graph node=914 op=RESHAPE name=attn_post_norm-9 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-9||
+AffinityWave: graph node=934 op=ADD name=ffn_moe_out-9 ne=2048,1024,1,1 split=1 src=node_934|ffn_moe_weighted-9 (view)|
+AffinityWave: graph node=943 op=ADD name=l_out-9 ne=2048,1024,1,1 split=1 src=ffn_out-9|attn_residual-9|
+AffinityWave: graph node=946 op=RESHAPE name=cache_r_l10 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l10||
+AffinityWave: graph node=947 op=VIEW name=cache_r_l10 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l10 (reshaped)||
+AffinityWave: graph node=948 op=SCALE name=cache_r_l10 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l10 (reshaped) (view)||
+AffinityWave: graph node=951 op=VIEW name=cache_r_l10 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l10||
+AffinityWave: graph node=952 op=CPY name=cache_r_l10 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_951|cache_r_l10 (view)|
+AffinityWave: graph node=961 op=RESHAPE name=cache_s_l10 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l10||
+AffinityWave: graph node=962 op=VIEW name=cache_s_l10 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l10 (reshaped)||
+AffinityWave: graph node=963 op=SCALE name=cache_s_l10 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l10 (reshaped) (view)||
+AffinityWave: graph node=966 op=VIEW name=cache_s_l10 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l10||
+AffinityWave: graph node=967 op=CPY name=cache_s_l10 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_966|cache_s_l10 (view)|
+AffinityWave: graph node=987 op=VIEW name=cache_s_l10 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l10||
+AffinityWave: graph node=988 op=CPY name=cache_s_l10 (view) (copy of new_state-10) ne=524288,1,1,1 split=MIRRORED src=new_state-10|cache_s_l10 (view)|
+AffinityWave: graph node=996 op=RESHAPE name=final_output-10 ne=4096,1024,1,1 split=1 src=node_996||
+AffinityWave: graph node=1001 op=MUL name=attn_post_norm-10 ne=2048,1024,1,1 split=1 src=norm-10|blk.10.post_attention_norm.weight|
+AffinityWave: graph node=1013 op=RESHAPE name=attn_post_norm-10 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-10||
+AffinityWave: graph node=1033 op=ADD name=ffn_moe_out-10 ne=2048,1024,1,1 split=1 src=node_1033|ffn_moe_weighted-10 (view)|
+AffinityWave: graph node=1042 op=ADD name=l_out-10 ne=2048,1024,1,1 split=1 src=ffn_out-10|attn_residual-10|
+AffinityWave: graph node=1058 op=SET_ROWS name=cache_k_l11 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-11 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l11
+AffinityWave: graph node=1060 op=SET_ROWS name=cache_v_l11 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-11 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l11
+AffinityWave: graph node=1063 op=VIEW name=cache_k_l11 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l11||
+AffinityWave: graph node=1064 op=PERMUTE name=cache_k_l11 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l11 (view)||
+AffinityWave: graph node=1065 op=VIEW name=cache_v_l11 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l11||
+AffinityWave: graph node=1066 op=PERMUTE name=cache_v_l11 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l11 (view)||
+AffinityWave: graph node=1076 op=MUL name=attn_post_norm-11 ne=2048,1024,1,1 split=1 src=norm-11|blk.11.post_attention_norm.weight|
+AffinityWave: graph node=1088 op=RESHAPE name=attn_post_norm-11 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-11||
+AffinityWave: graph node=1108 op=ADD name=ffn_moe_out-11 ne=2048,1024,1,1 split=1 src=node_1108|ffn_moe_weighted-11 (view)|
+AffinityWave: graph node=1117 op=ADD name=l_out-11 ne=2048,1024,1,1 split=1 src=ffn_out-11|attn_residual-11|
+AffinityWave: graph node=1120 op=RESHAPE name=cache_r_l12 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l12||
+AffinityWave: graph node=1121 op=VIEW name=cache_r_l12 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l12 (reshaped)||
+AffinityWave: graph node=1122 op=SCALE name=cache_r_l12 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l12 (reshaped) (view)||
+AffinityWave: graph node=1125 op=VIEW name=cache_r_l12 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l12||
+AffinityWave: graph node=1126 op=CPY name=cache_r_l12 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1125|cache_r_l12 (view)|
+AffinityWave: graph node=1135 op=RESHAPE name=cache_s_l12 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l12||
+AffinityWave: graph node=1136 op=VIEW name=cache_s_l12 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l12 (reshaped)||
+AffinityWave: graph node=1137 op=SCALE name=cache_s_l12 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l12 (reshaped) (view)||
+AffinityWave: graph node=1140 op=VIEW name=cache_s_l12 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l12||
+AffinityWave: graph node=1141 op=CPY name=cache_s_l12 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1140|cache_s_l12 (view)|
+AffinityWave: graph node=1161 op=VIEW name=cache_s_l12 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l12||
+AffinityWave: graph node=1162 op=CPY name=cache_s_l12 (view) (copy of new_state-12) ne=524288,1,1,1 split=MIRRORED src=new_state-12|cache_s_l12 (view)|
+AffinityWave: graph node=1170 op=RESHAPE name=final_output-12 ne=4096,1024,1,1 split=1 src=node_1170||
+AffinityWave: graph node=1175 op=MUL name=attn_post_norm-12 ne=2048,1024,1,1 split=1 src=norm-12|blk.12.post_attention_norm.weight|
+AffinityWave: graph node=1187 op=RESHAPE name=attn_post_norm-12 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-12||
+AffinityWave: graph node=1207 op=ADD name=ffn_moe_out-12 ne=2048,1024,1,1 split=1 src=node_1207|ffn_moe_weighted-12 (view)|
+AffinityWave: graph node=1216 op=ADD name=l_out-12 ne=2048,1024,1,1 split=1 src=ffn_out-12|attn_residual-12|
+AffinityWave: graph node=1219 op=RESHAPE name=cache_r_l13 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l13||
+AffinityWave: graph node=1220 op=VIEW name=cache_r_l13 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l13 (reshaped)||
+AffinityWave: graph node=1221 op=SCALE name=cache_r_l13 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l13 (reshaped) (view)||
+AffinityWave: graph node=1224 op=VIEW name=cache_r_l13 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l13||
+AffinityWave: graph node=1225 op=CPY name=cache_r_l13 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1224|cache_r_l13 (view)|
+AffinityWave: graph node=1234 op=RESHAPE name=cache_s_l13 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l13||
+AffinityWave: graph node=1235 op=VIEW name=cache_s_l13 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l13 (reshaped)||
+AffinityWave: graph node=1236 op=SCALE name=cache_s_l13 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l13 (reshaped) (view)||
+AffinityWave: graph node=1239 op=VIEW name=cache_s_l13 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l13||
+AffinityWave: graph node=1240 op=CPY name=cache_s_l13 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1239|cache_s_l13 (view)|
+AffinityWave: graph node=1260 op=VIEW name=cache_s_l13 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l13||
+AffinityWave: graph node=1261 op=CPY name=cache_s_l13 (view) (copy of new_state-13) ne=524288,1,1,1 split=MIRRORED src=new_state-13|cache_s_l13 (view)|
+AffinityWave: graph node=1269 op=RESHAPE name=final_output-13 ne=4096,1024,1,1 split=1 src=node_1269||
+AffinityWave: graph node=1274 op=MUL name=attn_post_norm-13 ne=2048,1024,1,1 split=1 src=norm-13|blk.13.post_attention_norm.weight|
+AffinityWave: graph node=1286 op=RESHAPE name=attn_post_norm-13 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-13||
+AffinityWave: graph node=1306 op=ADD name=ffn_moe_out-13 ne=2048,1024,1,1 split=1 src=node_1306|ffn_moe_weighted-13 (view)|
+AffinityWave: graph node=1315 op=ADD name=l_out-13 ne=2048,1024,1,1 split=1 src=ffn_out-13|attn_residual-13|
+AffinityWave: graph node=1318 op=RESHAPE name=cache_r_l14 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l14||
+AffinityWave: graph node=1319 op=VIEW name=cache_r_l14 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l14 (reshaped)||
+AffinityWave: graph node=1320 op=SCALE name=cache_r_l14 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l14 (reshaped) (view)||
+AffinityWave: graph node=1323 op=VIEW name=cache_r_l14 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l14||
+AffinityWave: graph node=1324 op=CPY name=cache_r_l14 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1323|cache_r_l14 (view)|
+AffinityWave: graph node=1333 op=RESHAPE name=cache_s_l14 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l14||
+AffinityWave: graph node=1334 op=VIEW name=cache_s_l14 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l14 (reshaped)||
+AffinityWave: graph node=1335 op=SCALE name=cache_s_l14 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l14 (reshaped) (view)||
+AffinityWave: graph node=1338 op=VIEW name=cache_s_l14 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l14||
+AffinityWave: graph node=1339 op=CPY name=cache_s_l14 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1338|cache_s_l14 (view)|
+AffinityWave: graph node=1359 op=VIEW name=cache_s_l14 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l14||
+AffinityWave: graph node=1360 op=CPY name=cache_s_l14 (view) (copy of new_state-14) ne=524288,1,1,1 split=MIRRORED src=new_state-14|cache_s_l14 (view)|
+AffinityWave: graph node=1368 op=RESHAPE name=final_output-14 ne=4096,1024,1,1 split=1 src=node_1368||
+AffinityWave: graph node=1373 op=MUL name=attn_post_norm-14 ne=2048,1024,1,1 split=1 src=norm-14|blk.14.post_attention_norm.weight|
+AffinityWave: graph node=1385 op=RESHAPE name=attn_post_norm-14 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-14||
+AffinityWave: graph node=1405 op=ADD name=ffn_moe_out-14 ne=2048,1024,1,1 split=1 src=node_1405|ffn_moe_weighted-14 (view)|
+AffinityWave: graph node=1414 op=ADD name=l_out-14 ne=2048,1024,1,1 split=1 src=ffn_out-14|attn_residual-14|
+AffinityWave: graph node=1430 op=SET_ROWS name=cache_k_l15 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-15 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l15
+AffinityWave: graph node=1432 op=SET_ROWS name=cache_v_l15 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-15 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l15
+AffinityWave: graph node=1435 op=VIEW name=cache_k_l15 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l15||
+AffinityWave: graph node=1436 op=PERMUTE name=cache_k_l15 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l15 (view)||
+AffinityWave: graph node=1437 op=VIEW name=cache_v_l15 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l15||
+AffinityWave: graph node=1438 op=PERMUTE name=cache_v_l15 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l15 (view)||
+AffinityWave: graph node=1448 op=MUL name=attn_post_norm-15 ne=2048,1024,1,1 split=1 src=norm-15|blk.15.post_attention_norm.weight|
+AffinityWave: graph node=1460 op=RESHAPE name=attn_post_norm-15 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-15||
+AffinityWave: graph node=1480 op=ADD name=ffn_moe_out-15 ne=2048,1024,1,1 split=1 src=node_1480|ffn_moe_weighted-15 (view)|
+AffinityWave: graph node=1489 op=ADD name=l_out-15 ne=2048,1024,1,1 split=1 src=ffn_out-15|attn_residual-15|
+AffinityWave: graph node=1492 op=RESHAPE name=cache_r_l16 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l16||
+AffinityWave: graph node=1493 op=VIEW name=cache_r_l16 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l16 (reshaped)||
+AffinityWave: graph node=1494 op=SCALE name=cache_r_l16 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l16 (reshaped) (view)||
+AffinityWave: graph node=1497 op=VIEW name=cache_r_l16 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l16||
+AffinityWave: graph node=1498 op=CPY name=cache_r_l16 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1497|cache_r_l16 (view)|
+AffinityWave: graph node=1507 op=RESHAPE name=cache_s_l16 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l16||
+AffinityWave: graph node=1508 op=VIEW name=cache_s_l16 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l16 (reshaped)||
+AffinityWave: graph node=1509 op=SCALE name=cache_s_l16 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l16 (reshaped) (view)||
+AffinityWave: graph node=1512 op=VIEW name=cache_s_l16 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l16||
+AffinityWave: graph node=1513 op=CPY name=cache_s_l16 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1512|cache_s_l16 (view)|
+AffinityWave: graph node=1533 op=VIEW name=cache_s_l16 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l16||
+AffinityWave: graph node=1534 op=CPY name=cache_s_l16 (view) (copy of new_state-16) ne=524288,1,1,1 split=MIRRORED src=new_state-16|cache_s_l16 (view)|
+AffinityWave: graph node=1542 op=RESHAPE name=final_output-16 ne=4096,1024,1,1 split=1 src=node_1542||
+AffinityWave: graph node=1547 op=MUL name=attn_post_norm-16 ne=2048,1024,1,1 split=1 src=norm-16|blk.16.post_attention_norm.weight|
+AffinityWave: graph node=1559 op=RESHAPE name=attn_post_norm-16 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-16||
+AffinityWave: graph node=1579 op=ADD name=ffn_moe_out-16 ne=2048,1024,1,1 split=1 src=node_1579|ffn_moe_weighted-16 (view)|
+AffinityWave: graph node=1588 op=ADD name=l_out-16 ne=2048,1024,1,1 split=1 src=ffn_out-16|attn_residual-16|
+AffinityWave: graph node=1591 op=RESHAPE name=cache_r_l17 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l17||
+AffinityWave: graph node=1592 op=VIEW name=cache_r_l17 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l17 (reshaped)||
+AffinityWave: graph node=1593 op=SCALE name=cache_r_l17 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l17 (reshaped) (view)||
+AffinityWave: graph node=1596 op=VIEW name=cache_r_l17 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l17||
+AffinityWave: graph node=1597 op=CPY name=cache_r_l17 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1596|cache_r_l17 (view)|
+AffinityWave: graph node=1606 op=RESHAPE name=cache_s_l17 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l17||
+AffinityWave: graph node=1607 op=VIEW name=cache_s_l17 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l17 (reshaped)||
+AffinityWave: graph node=1608 op=SCALE name=cache_s_l17 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l17 (reshaped) (view)||
+AffinityWave: graph node=1611 op=VIEW name=cache_s_l17 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l17||
+AffinityWave: graph node=1612 op=CPY name=cache_s_l17 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1611|cache_s_l17 (view)|
+AffinityWave: graph node=1632 op=VIEW name=cache_s_l17 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l17||
+AffinityWave: graph node=1633 op=CPY name=cache_s_l17 (view) (copy of new_state-17) ne=524288,1,1,1 split=MIRRORED src=new_state-17|cache_s_l17 (view)|
+AffinityWave: graph node=1641 op=RESHAPE name=final_output-17 ne=4096,1024,1,1 split=1 src=node_1641||
+AffinityWave: graph node=1646 op=MUL name=attn_post_norm-17 ne=2048,1024,1,1 split=1 src=norm-17|blk.17.post_attention_norm.weight|
+AffinityWave: graph node=1658 op=RESHAPE name=attn_post_norm-17 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-17||
+AffinityWave: graph node=1678 op=ADD name=ffn_moe_out-17 ne=2048,1024,1,1 split=1 src=node_1678|ffn_moe_weighted-17 (view)|
+AffinityWave: graph node=1687 op=ADD name=l_out-17 ne=2048,1024,1,1 split=1 src=ffn_out-17|attn_residual-17|
+AffinityWave: graph node=1690 op=RESHAPE name=cache_r_l18 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l18||
+AffinityWave: graph node=1691 op=VIEW name=cache_r_l18 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l18 (reshaped)||
+AffinityWave: graph node=1692 op=SCALE name=cache_r_l18 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l18 (reshaped) (view)||
+AffinityWave: graph node=1695 op=VIEW name=cache_r_l18 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l18||
+AffinityWave: graph node=1696 op=CPY name=cache_r_l18 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1695|cache_r_l18 (view)|
+AffinityWave: graph node=1705 op=RESHAPE name=cache_s_l18 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l18||
+AffinityWave: graph node=1706 op=VIEW name=cache_s_l18 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l18 (reshaped)||
+AffinityWave: graph node=1707 op=SCALE name=cache_s_l18 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l18 (reshaped) (view)||
+AffinityWave: graph node=1710 op=VIEW name=cache_s_l18 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l18||
+AffinityWave: graph node=1711 op=CPY name=cache_s_l18 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1710|cache_s_l18 (view)|
+AffinityWave: graph node=1731 op=VIEW name=cache_s_l18 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l18||
+AffinityWave: graph node=1732 op=CPY name=cache_s_l18 (view) (copy of new_state-18) ne=524288,1,1,1 split=MIRRORED src=new_state-18|cache_s_l18 (view)|
+AffinityWave: graph node=1740 op=RESHAPE name=final_output-18 ne=4096,1024,1,1 split=1 src=node_1740||
+AffinityWave: graph node=1745 op=MUL name=attn_post_norm-18 ne=2048,1024,1,1 split=1 src=norm-18|blk.18.post_attention_norm.weight|
+AffinityWave: graph node=1757 op=RESHAPE name=attn_post_norm-18 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-18||
+AffinityWave: graph node=1777 op=ADD name=ffn_moe_out-18 ne=2048,1024,1,1 split=1 src=node_1777|ffn_moe_weighted-18 (view)|
+AffinityWave: graph node=1786 op=ADD name=l_out-18 ne=2048,1024,1,1 split=1 src=ffn_out-18|attn_residual-18|
+AffinityWave: graph node=1802 op=SET_ROWS name=cache_k_l19 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-19 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l19
+AffinityWave: graph node=1804 op=SET_ROWS name=cache_v_l19 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-19 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l19
+AffinityWave: graph node=1807 op=VIEW name=cache_k_l19 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l19||
+AffinityWave: graph node=1808 op=PERMUTE name=cache_k_l19 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l19 (view)||
+AffinityWave: graph node=1809 op=VIEW name=cache_v_l19 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l19||
+AffinityWave: graph node=1810 op=PERMUTE name=cache_v_l19 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l19 (view)||
+AffinityWave: graph node=1820 op=MUL name=attn_post_norm-19 ne=2048,1024,1,1 split=1 src=norm-19|blk.19.post_attention_norm.weight|
+AffinityWave: graph node=1832 op=RESHAPE name=attn_post_norm-19 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-19||
+AffinityWave: graph node=1852 op=ADD name=ffn_moe_out-19 ne=2048,1024,1,1 split=1 src=node_1852|ffn_moe_weighted-19 (view)|
+AffinityWave: graph node=1861 op=ADD name=l_out-19 ne=2048,1024,1,1 split=1 src=ffn_out-19|attn_residual-19|
+AffinityWave: graph node=1864 op=RESHAPE name=cache_r_l20 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l20||
+AffinityWave: graph node=1865 op=VIEW name=cache_r_l20 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l20 (reshaped)||
+AffinityWave: graph node=1866 op=SCALE name=cache_r_l20 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l20 (reshaped) (view)||
+AffinityWave: graph node=1869 op=VIEW name=cache_r_l20 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l20||
+AffinityWave: graph node=1870 op=CPY name=cache_r_l20 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1869|cache_r_l20 (view)|
+AffinityWave: graph node=1879 op=RESHAPE name=cache_s_l20 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l20||
+AffinityWave: graph node=1880 op=VIEW name=cache_s_l20 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l20 (reshaped)||
+AffinityWave: graph node=1881 op=SCALE name=cache_s_l20 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l20 (reshaped) (view)||
+AffinityWave: graph node=1884 op=VIEW name=cache_s_l20 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l20||
+AffinityWave: graph node=1885 op=CPY name=cache_s_l20 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1884|cache_s_l20 (view)|
+AffinityWave: graph node=1905 op=VIEW name=cache_s_l20 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l20||
+AffinityWave: graph node=1906 op=CPY name=cache_s_l20 (view) (copy of new_state-20) ne=524288,1,1,1 split=MIRRORED src=new_state-20|cache_s_l20 (view)|
+AffinityWave: graph node=1914 op=RESHAPE name=final_output-20 ne=4096,1024,1,1 split=1 src=node_1914||
+AffinityWave: graph node=1919 op=MUL name=attn_post_norm-20 ne=2048,1024,1,1 split=1 src=norm-20|blk.20.post_attention_norm.weight|
+AffinityWave: graph node=1931 op=RESHAPE name=attn_post_norm-20 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-20||
+AffinityWave: graph node=1951 op=ADD name=ffn_moe_out-20 ne=2048,1024,1,1 split=1 src=node_1951|ffn_moe_weighted-20 (view)|
+AffinityWave: graph node=1960 op=ADD name=l_out-20 ne=2048,1024,1,1 split=1 src=ffn_out-20|attn_residual-20|
+AffinityWave: graph node=1963 op=RESHAPE name=cache_r_l21 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l21||
+AffinityWave: graph node=1964 op=VIEW name=cache_r_l21 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l21 (reshaped)||
+AffinityWave: graph node=1965 op=SCALE name=cache_r_l21 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l21 (reshaped) (view)||
+AffinityWave: graph node=1968 op=VIEW name=cache_r_l21 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l21||
+AffinityWave: graph node=1969 op=CPY name=cache_r_l21 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_1968|cache_r_l21 (view)|
+AffinityWave: graph node=1978 op=RESHAPE name=cache_s_l21 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l21||
+AffinityWave: graph node=1979 op=VIEW name=cache_s_l21 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l21 (reshaped)||
+AffinityWave: graph node=1980 op=SCALE name=cache_s_l21 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l21 (reshaped) (view)||
+AffinityWave: graph node=1983 op=VIEW name=cache_s_l21 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l21||
+AffinityWave: graph node=1984 op=CPY name=cache_s_l21 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_1983|cache_s_l21 (view)|
+AffinityWave: graph node=2004 op=VIEW name=cache_s_l21 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l21||
+AffinityWave: graph node=2005 op=CPY name=cache_s_l21 (view) (copy of new_state-21) ne=524288,1,1,1 split=MIRRORED src=new_state-21|cache_s_l21 (view)|
+AffinityWave: graph node=2013 op=RESHAPE name=final_output-21 ne=4096,1024,1,1 split=1 src=node_2013||
+AffinityWave: graph node=2018 op=MUL name=attn_post_norm-21 ne=2048,1024,1,1 split=1 src=norm-21|blk.21.post_attention_norm.weight|
+AffinityWave: graph node=2030 op=RESHAPE name=attn_post_norm-21 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-21||
+AffinityWave: graph node=2050 op=ADD name=ffn_moe_out-21 ne=2048,1024,1,1 split=1 src=node_2050|ffn_moe_weighted-21 (view)|
+AffinityWave: graph node=2059 op=ADD name=l_out-21 ne=2048,1024,1,1 split=1 src=ffn_out-21|attn_residual-21|
+AffinityWave: graph node=2062 op=RESHAPE name=cache_r_l22 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l22||
+AffinityWave: graph node=2063 op=VIEW name=cache_r_l22 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l22 (reshaped)||
+AffinityWave: graph node=2064 op=SCALE name=cache_r_l22 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l22 (reshaped) (view)||
+AffinityWave: graph node=2067 op=VIEW name=cache_r_l22 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l22||
+AffinityWave: graph node=2068 op=CPY name=cache_r_l22 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2067|cache_r_l22 (view)|
+AffinityWave: graph node=2077 op=RESHAPE name=cache_s_l22 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l22||
+AffinityWave: graph node=2078 op=VIEW name=cache_s_l22 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l22 (reshaped)||
+AffinityWave: graph node=2079 op=SCALE name=cache_s_l22 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l22 (reshaped) (view)||
+AffinityWave: graph node=2082 op=VIEW name=cache_s_l22 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l22||
+AffinityWave: graph node=2083 op=CPY name=cache_s_l22 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_2082|cache_s_l22 (view)|
+AffinityWave: graph node=2103 op=VIEW name=cache_s_l22 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l22||
+AffinityWave: graph node=2104 op=CPY name=cache_s_l22 (view) (copy of new_state-22) ne=524288,1,1,1 split=MIRRORED src=new_state-22|cache_s_l22 (view)|
+AffinityWave: graph node=2112 op=RESHAPE name=final_output-22 ne=4096,1024,1,1 split=1 src=node_2112||
+AffinityWave: graph node=2117 op=MUL name=attn_post_norm-22 ne=2048,1024,1,1 split=1 src=norm-22|blk.22.post_attention_norm.weight|
+AffinityWave: graph node=2129 op=RESHAPE name=attn_post_norm-22 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-22||
+AffinityWave: graph node=2149 op=ADD name=ffn_moe_out-22 ne=2048,1024,1,1 split=1 src=node_2149|ffn_moe_weighted-22 (view)|
+AffinityWave: graph node=2158 op=ADD name=l_out-22 ne=2048,1024,1,1 split=1 src=ffn_out-22|attn_residual-22|
+AffinityWave: graph node=2174 op=SET_ROWS name=cache_k_l23 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-23 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l23
+AffinityWave: graph node=2176 op=SET_ROWS name=cache_v_l23 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-23 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l23
+AffinityWave: graph node=2179 op=VIEW name=cache_k_l23 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l23||
+AffinityWave: graph node=2180 op=PERMUTE name=cache_k_l23 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l23 (view)||
+AffinityWave: graph node=2181 op=VIEW name=cache_v_l23 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l23||
+AffinityWave: graph node=2182 op=PERMUTE name=cache_v_l23 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l23 (view)||
+AffinityWave: graph node=2192 op=MUL name=attn_post_norm-23 ne=2048,1024,1,1 split=1 src=norm-23|blk.23.post_attention_norm.weight|
+AffinityWave: graph node=2204 op=RESHAPE name=attn_post_norm-23 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-23||
+AffinityWave: graph node=2224 op=ADD name=ffn_moe_out-23 ne=2048,1024,1,1 split=1 src=node_2224|ffn_moe_weighted-23 (view)|
+AffinityWave: graph node=2233 op=ADD name=l_out-23 ne=2048,1024,1,1 split=1 src=ffn_out-23|attn_residual-23|
+AffinityWave: graph node=2236 op=RESHAPE name=cache_r_l24 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l24||
+AffinityWave: graph node=2237 op=VIEW name=cache_r_l24 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l24 (reshaped)||
+AffinityWave: graph node=2238 op=SCALE name=cache_r_l24 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l24 (reshaped) (view)||
+AffinityWave: graph node=2241 op=VIEW name=cache_r_l24 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l24||
+AffinityWave: graph node=2242 op=CPY name=cache_r_l24 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2241|cache_r_l24 (view)|
+AffinityWave: graph node=2251 op=RESHAPE name=cache_s_l24 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l24||
+AffinityWave: graph node=2252 op=VIEW name=cache_s_l24 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l24 (reshaped)||
+AffinityWave: graph node=2253 op=SCALE name=cache_s_l24 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l24 (reshaped) (view)||
+AffinityWave: graph node=2256 op=VIEW name=cache_s_l24 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l24||
+AffinityWave: graph node=2257 op=CPY name=cache_s_l24 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_2256|cache_s_l24 (view)|
+AffinityWave: graph node=2277 op=VIEW name=cache_s_l24 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l24||
+AffinityWave: graph node=2278 op=CPY name=cache_s_l24 (view) (copy of new_state-24) ne=524288,1,1,1 split=MIRRORED src=new_state-24|cache_s_l24 (view)|
+AffinityWave: graph node=2286 op=RESHAPE name=final_output-24 ne=4096,1024,1,1 split=1 src=node_2286||
+AffinityWave: graph node=2291 op=MUL name=attn_post_norm-24 ne=2048,1024,1,1 split=1 src=norm-24|blk.24.post_attention_norm.weight|
+AffinityWave: graph node=2303 op=RESHAPE name=attn_post_norm-24 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-24||
+AffinityWave: graph node=2323 op=ADD name=ffn_moe_out-24 ne=2048,1024,1,1 split=1 src=node_2323|ffn_moe_weighted-24 (view)|
+AffinityWave: graph node=2332 op=ADD name=l_out-24 ne=2048,1024,1,1 split=1 src=ffn_out-24|attn_residual-24|
+AffinityWave: graph node=2335 op=RESHAPE name=cache_r_l25 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l25||
+AffinityWave: graph node=2336 op=VIEW name=cache_r_l25 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l25 (reshaped)||
+AffinityWave: graph node=2337 op=SCALE name=cache_r_l25 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l25 (reshaped) (view)||
+AffinityWave: graph node=2340 op=VIEW name=cache_r_l25 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l25||
+AffinityWave: graph node=2341 op=CPY name=cache_r_l25 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2340|cache_r_l25 (view)|
+AffinityWave: graph node=2350 op=RESHAPE name=cache_s_l25 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l25||
+AffinityWave: graph node=2351 op=VIEW name=cache_s_l25 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l25 (reshaped)||
+AffinityWave: graph node=2352 op=SCALE name=cache_s_l25 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l25 (reshaped) (view)||
+AffinityWave: graph node=2355 op=VIEW name=cache_s_l25 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l25||
+AffinityWave: graph node=2356 op=CPY name=cache_s_l25 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_2355|cache_s_l25 (view)|
+AffinityWave: graph node=2376 op=VIEW name=cache_s_l25 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l25||
+AffinityWave: graph node=2377 op=CPY name=cache_s_l25 (view) (copy of new_state-25) ne=524288,1,1,1 split=MIRRORED src=new_state-25|cache_s_l25 (view)|
+AffinityWave: graph node=2385 op=RESHAPE name=final_output-25 ne=4096,1024,1,1 split=1 src=node_2385||
+AffinityWave: graph node=2390 op=MUL name=attn_post_norm-25 ne=2048,1024,1,1 split=1 src=norm-25|blk.25.post_attention_norm.weight|
+AffinityWave: graph node=2402 op=RESHAPE name=attn_post_norm-25 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-25||
+AffinityWave: graph node=2422 op=ADD name=ffn_moe_out-25 ne=2048,1024,1,1 split=1 src=node_2422|ffn_moe_weighted-25 (view)|
+AffinityWave: graph node=2431 op=ADD name=l_out-25 ne=2048,1024,1,1 split=1 src=ffn_out-25|attn_residual-25|
+AffinityWave: graph node=2434 op=RESHAPE name=cache_r_l26 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l26||
+AffinityWave: graph node=2435 op=VIEW name=cache_r_l26 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l26 (reshaped)||
+AffinityWave: graph node=2436 op=SCALE name=cache_r_l26 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l26 (reshaped) (view)||
+AffinityWave: graph node=2439 op=VIEW name=cache_r_l26 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l26||
+AffinityWave: graph node=2440 op=CPY name=cache_r_l26 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2439|cache_r_l26 (view)|
+AffinityWave: graph node=2449 op=RESHAPE name=cache_s_l26 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l26||
+AffinityWave: graph node=2450 op=VIEW name=cache_s_l26 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l26 (reshaped)||
+AffinityWave: graph node=2451 op=SCALE name=cache_s_l26 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l26 (reshaped) (view)||
+AffinityWave: graph node=2454 op=VIEW name=cache_s_l26 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l26||
+AffinityWave: graph node=2455 op=CPY name=cache_s_l26 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_2454|cache_s_l26 (view)|
+AffinityWave: graph node=2475 op=VIEW name=cache_s_l26 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l26||
+AffinityWave: graph node=2476 op=CPY name=cache_s_l26 (view) (copy of new_state-26) ne=524288,1,1,1 split=MIRRORED src=new_state-26|cache_s_l26 (view)|
+AffinityWave: graph node=2484 op=RESHAPE name=final_output-26 ne=4096,1024,1,1 split=1 src=node_2484||
+AffinityWave: graph node=2489 op=MUL name=attn_post_norm-26 ne=2048,1024,1,1 split=1 src=norm-26|blk.26.post_attention_norm.weight|
+AffinityWave: graph node=2501 op=RESHAPE name=attn_post_norm-26 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-26||
+AffinityWave: graph node=2521 op=ADD name=ffn_moe_out-26 ne=2048,1024,1,1 split=1 src=node_2521|ffn_moe_weighted-26 (view)|
+AffinityWave: graph node=2530 op=ADD name=l_out-26 ne=2048,1024,1,1 split=1 src=ffn_out-26|attn_residual-26|
+AffinityWave: graph node=2546 op=SET_ROWS name=cache_k_l27 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-27 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l27
+AffinityWave: graph node=2548 op=SET_ROWS name=cache_v_l27 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-27 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l27
+AffinityWave: graph node=2551 op=VIEW name=cache_k_l27 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l27||
+AffinityWave: graph node=2552 op=PERMUTE name=cache_k_l27 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l27 (view)||
+AffinityWave: graph node=2553 op=VIEW name=cache_v_l27 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l27||
+AffinityWave: graph node=2554 op=PERMUTE name=cache_v_l27 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l27 (view)||
+AffinityWave: graph node=2564 op=MUL name=attn_post_norm-27 ne=2048,1024,1,1 split=1 src=norm-27|blk.27.post_attention_norm.weight|
+AffinityWave: graph node=2576 op=RESHAPE name=attn_post_norm-27 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-27||
+AffinityWave: graph node=2596 op=ADD name=ffn_moe_out-27 ne=2048,1024,1,1 split=1 src=node_2596|ffn_moe_weighted-27 (view)|
+AffinityWave: graph node=2605 op=ADD name=l_out-27 ne=2048,1024,1,1 split=1 src=ffn_out-27|attn_residual-27|
+AffinityWave: graph node=2608 op=RESHAPE name=cache_r_l28 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l28||
+AffinityWave: graph node=2609 op=VIEW name=cache_r_l28 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l28 (reshaped)||
+AffinityWave: graph node=2610 op=SCALE name=cache_r_l28 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l28 (reshaped) (view)||
+AffinityWave: graph node=2613 op=VIEW name=cache_r_l28 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l28||
+AffinityWave: graph node=2614 op=CPY name=cache_r_l28 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2613|cache_r_l28 (view)|
+AffinityWave: graph node=2623 op=RESHAPE name=cache_s_l28 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l28||
+AffinityWave: graph node=2624 op=VIEW name=cache_s_l28 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l28 (reshaped)||
+AffinityWave: graph node=2625 op=SCALE name=cache_s_l28 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l28 (reshaped) (view)||
+AffinityWave: graph node=2628 op=VIEW name=cache_s_l28 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l28||
+AffinityWave: graph node=2629 op=CPY name=cache_s_l28 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_2628|cache_s_l28 (view)|
+AffinityWave: graph node=2649 op=VIEW name=cache_s_l28 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l28||
+AffinityWave: graph node=2650 op=CPY name=cache_s_l28 (view) (copy of new_state-28) ne=524288,1,1,1 split=MIRRORED src=new_state-28|cache_s_l28 (view)|
+AffinityWave: graph node=2658 op=RESHAPE name=final_output-28 ne=4096,1024,1,1 split=1 src=node_2658||
+AffinityWave: graph node=2663 op=MUL name=attn_post_norm-28 ne=2048,1024,1,1 split=1 src=norm-28|blk.28.post_attention_norm.weight|
+AffinityWave: graph node=2675 op=RESHAPE name=attn_post_norm-28 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-28||
+AffinityWave: graph node=2695 op=ADD name=ffn_moe_out-28 ne=2048,1024,1,1 split=1 src=node_2695|ffn_moe_weighted-28 (view)|
+AffinityWave: graph node=2704 op=ADD name=l_out-28 ne=2048,1024,1,1 split=1 src=ffn_out-28|attn_residual-28|
+AffinityWave: graph node=2707 op=RESHAPE name=cache_r_l29 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l29||
+AffinityWave: graph node=2708 op=VIEW name=cache_r_l29 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l29 (reshaped)||
+AffinityWave: graph node=2709 op=SCALE name=cache_r_l29 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l29 (reshaped) (view)||
+AffinityWave: graph node=2712 op=VIEW name=cache_r_l29 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l29||
+AffinityWave: graph node=2713 op=CPY name=cache_r_l29 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2712|cache_r_l29 (view)|
+AffinityWave: graph node=2722 op=RESHAPE name=cache_s_l29 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l29||
+AffinityWave: graph node=2723 op=VIEW name=cache_s_l29 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l29 (reshaped)||
+AffinityWave: graph node=2724 op=SCALE name=cache_s_l29 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l29 (reshaped) (view)||
+AffinityWave: graph node=2727 op=VIEW name=cache_s_l29 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l29||
+AffinityWave: graph node=2728 op=CPY name=cache_s_l29 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_2727|cache_s_l29 (view)|
+AffinityWave: graph node=2748 op=VIEW name=cache_s_l29 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l29||
+AffinityWave: graph node=2749 op=CPY name=cache_s_l29 (view) (copy of new_state-29) ne=524288,1,1,1 split=MIRRORED src=new_state-29|cache_s_l29 (view)|
+AffinityWave: graph node=2757 op=RESHAPE name=final_output-29 ne=4096,1024,1,1 split=1 src=node_2757||
+AffinityWave: graph node=2762 op=MUL name=attn_post_norm-29 ne=2048,1024,1,1 split=1 src=norm-29|blk.29.post_attention_norm.weight|
+AffinityWave: graph node=2774 op=RESHAPE name=attn_post_norm-29 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-29||
+AffinityWave: graph node=2794 op=ADD name=ffn_moe_out-29 ne=2048,1024,1,1 split=1 src=node_2794|ffn_moe_weighted-29 (view)|
+AffinityWave: graph node=2803 op=ADD name=l_out-29 ne=2048,1024,1,1 split=1 src=ffn_out-29|attn_residual-29|
+AffinityWave: graph node=2806 op=RESHAPE name=cache_r_l30 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l30||
+AffinityWave: graph node=2807 op=VIEW name=cache_r_l30 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l30 (reshaped)||
+AffinityWave: graph node=2808 op=SCALE name=cache_r_l30 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l30 (reshaped) (view)||
+AffinityWave: graph node=2811 op=VIEW name=cache_r_l30 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l30||
+AffinityWave: graph node=2812 op=CPY name=cache_r_l30 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2811|cache_r_l30 (view)|
+AffinityWave: graph node=2821 op=RESHAPE name=cache_s_l30 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l30||
+AffinityWave: graph node=2822 op=VIEW name=cache_s_l30 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l30 (reshaped)||
+AffinityWave: graph node=2823 op=SCALE name=cache_s_l30 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l30 (reshaped) (view)||
+AffinityWave: graph node=2826 op=VIEW name=cache_s_l30 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l30||
+AffinityWave: graph node=2827 op=CPY name=cache_s_l30 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_2826|cache_s_l30 (view)|
+AffinityWave: graph node=2847 op=VIEW name=cache_s_l30 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l30||
+AffinityWave: graph node=2848 op=CPY name=cache_s_l30 (view) (copy of new_state-30) ne=524288,1,1,1 split=MIRRORED src=new_state-30|cache_s_l30 (view)|
+AffinityWave: graph node=2856 op=RESHAPE name=final_output-30 ne=4096,1024,1,1 split=1 src=node_2856||
+AffinityWave: graph node=2861 op=MUL name=attn_post_norm-30 ne=2048,1024,1,1 split=1 src=norm-30|blk.30.post_attention_norm.weight|
+AffinityWave: graph node=2873 op=RESHAPE name=attn_post_norm-30 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-30||
+AffinityWave: graph node=2893 op=ADD name=ffn_moe_out-30 ne=2048,1024,1,1 split=1 src=node_2893|ffn_moe_weighted-30 (view)|
+AffinityWave: graph node=2902 op=ADD name=l_out-30 ne=2048,1024,1,1 split=1 src=ffn_out-30|attn_residual-30|
+AffinityWave: graph node=2918 op=SET_ROWS name=cache_k_l31 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-31 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l31
+AffinityWave: graph node=2920 op=SET_ROWS name=cache_v_l31 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-31 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l31
+AffinityWave: graph node=2923 op=VIEW name=cache_k_l31 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l31||
+AffinityWave: graph node=2924 op=PERMUTE name=cache_k_l31 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l31 (view)||
+AffinityWave: graph node=2925 op=VIEW name=cache_v_l31 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l31||
+AffinityWave: graph node=2926 op=PERMUTE name=cache_v_l31 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l31 (view)||
+AffinityWave: graph node=2936 op=MUL name=attn_post_norm-31 ne=2048,1024,1,1 split=1 src=norm-31|blk.31.post_attention_norm.weight|
+AffinityWave: graph node=2948 op=RESHAPE name=attn_post_norm-31 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-31||
+AffinityWave: graph node=2968 op=ADD name=ffn_moe_out-31 ne=2048,1024,1,1 split=1 src=node_2968|ffn_moe_weighted-31 (view)|
+AffinityWave: graph node=2977 op=ADD name=l_out-31 ne=2048,1024,1,1 split=1 src=ffn_out-31|attn_residual-31|
+AffinityWave: graph node=2980 op=RESHAPE name=cache_r_l32 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l32||
+AffinityWave: graph node=2981 op=VIEW name=cache_r_l32 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l32 (reshaped)||
+AffinityWave: graph node=2982 op=SCALE name=cache_r_l32 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l32 (reshaped) (view)||
+AffinityWave: graph node=2985 op=VIEW name=cache_r_l32 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l32||
+AffinityWave: graph node=2986 op=CPY name=cache_r_l32 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_2985|cache_r_l32 (view)|
+AffinityWave: graph node=2995 op=RESHAPE name=cache_s_l32 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l32||
+AffinityWave: graph node=2996 op=VIEW name=cache_s_l32 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l32 (reshaped)||
+AffinityWave: graph node=2997 op=SCALE name=cache_s_l32 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l32 (reshaped) (view)||
+AffinityWave: graph node=3000 op=VIEW name=cache_s_l32 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l32||
+AffinityWave: graph node=3001 op=CPY name=cache_s_l32 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_3000|cache_s_l32 (view)|
+AffinityWave: graph node=3021 op=VIEW name=cache_s_l32 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l32||
+AffinityWave: graph node=3022 op=CPY name=cache_s_l32 (view) (copy of new_state-32) ne=524288,1,1,1 split=MIRRORED src=new_state-32|cache_s_l32 (view)|
+AffinityWave: graph node=3030 op=RESHAPE name=final_output-32 ne=4096,1024,1,1 split=1 src=node_3030||
+AffinityWave: graph node=3035 op=MUL name=attn_post_norm-32 ne=2048,1024,1,1 split=1 src=norm-32|blk.32.post_attention_norm.weight|
+AffinityWave: graph node=3047 op=RESHAPE name=attn_post_norm-32 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-32||
+AffinityWave: graph node=3067 op=ADD name=ffn_moe_out-32 ne=2048,1024,1,1 split=1 src=node_3067|ffn_moe_weighted-32 (view)|
+AffinityWave: graph node=3076 op=ADD name=l_out-32 ne=2048,1024,1,1 split=1 src=ffn_out-32|attn_residual-32|
+AffinityWave: graph node=3079 op=RESHAPE name=cache_r_l33 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l33||
+AffinityWave: graph node=3080 op=VIEW name=cache_r_l33 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l33 (reshaped)||
+AffinityWave: graph node=3081 op=SCALE name=cache_r_l33 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l33 (reshaped) (view)||
+AffinityWave: graph node=3084 op=VIEW name=cache_r_l33 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l33||
+AffinityWave: graph node=3085 op=CPY name=cache_r_l33 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_3084|cache_r_l33 (view)|
+AffinityWave: graph node=3094 op=RESHAPE name=cache_s_l33 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l33||
+AffinityWave: graph node=3095 op=VIEW name=cache_s_l33 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l33 (reshaped)||
+AffinityWave: graph node=3096 op=SCALE name=cache_s_l33 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l33 (reshaped) (view)||
+AffinityWave: graph node=3099 op=VIEW name=cache_s_l33 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l33||
+AffinityWave: graph node=3100 op=CPY name=cache_s_l33 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_3099|cache_s_l33 (view)|
+AffinityWave: graph node=3120 op=VIEW name=cache_s_l33 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l33||
+AffinityWave: graph node=3121 op=CPY name=cache_s_l33 (view) (copy of new_state-33) ne=524288,1,1,1 split=MIRRORED src=new_state-33|cache_s_l33 (view)|
+AffinityWave: graph node=3129 op=RESHAPE name=final_output-33 ne=4096,1024,1,1 split=1 src=node_3129||
+AffinityWave: graph node=3134 op=MUL name=attn_post_norm-33 ne=2048,1024,1,1 split=1 src=norm-33|blk.33.post_attention_norm.weight|
+AffinityWave: graph node=3146 op=RESHAPE name=attn_post_norm-33 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-33||
+AffinityWave: graph node=3166 op=ADD name=ffn_moe_out-33 ne=2048,1024,1,1 split=1 src=node_3166|ffn_moe_weighted-33 (view)|
+AffinityWave: graph node=3175 op=ADD name=l_out-33 ne=2048,1024,1,1 split=1 src=ffn_out-33|attn_residual-33|
+AffinityWave: graph node=3178 op=RESHAPE name=cache_r_l34 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l34||
+AffinityWave: graph node=3179 op=VIEW name=cache_r_l34 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l34 (reshaped)||
+AffinityWave: graph node=3180 op=SCALE name=cache_r_l34 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l34 (reshaped) (view)||
+AffinityWave: graph node=3183 op=VIEW name=cache_r_l34 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l34||
+AffinityWave: graph node=3184 op=CPY name=cache_r_l34 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_3183|cache_r_l34 (view)|
+AffinityWave: graph node=3193 op=RESHAPE name=cache_s_l34 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l34||
+AffinityWave: graph node=3194 op=VIEW name=cache_s_l34 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l34 (reshaped)||
+AffinityWave: graph node=3195 op=SCALE name=cache_s_l34 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l34 (reshaped) (view)||
+AffinityWave: graph node=3198 op=VIEW name=cache_s_l34 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l34||
+AffinityWave: graph node=3199 op=CPY name=cache_s_l34 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_3198|cache_s_l34 (view)|
+AffinityWave: graph node=3219 op=VIEW name=cache_s_l34 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l34||
+AffinityWave: graph node=3220 op=CPY name=cache_s_l34 (view) (copy of new_state-34) ne=524288,1,1,1 split=MIRRORED src=new_state-34|cache_s_l34 (view)|
+AffinityWave: graph node=3228 op=RESHAPE name=final_output-34 ne=4096,1024,1,1 split=1 src=node_3228||
+AffinityWave: graph node=3233 op=MUL name=attn_post_norm-34 ne=2048,1024,1,1 split=1 src=norm-34|blk.34.post_attention_norm.weight|
+AffinityWave: graph node=3245 op=RESHAPE name=attn_post_norm-34 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-34||
+AffinityWave: graph node=3265 op=ADD name=ffn_moe_out-34 ne=2048,1024,1,1 split=1 src=node_3265|ffn_moe_weighted-34 (view)|
+AffinityWave: graph node=3274 op=ADD name=l_out-34 ne=2048,1024,1,1 split=1 src=ffn_out-34|attn_residual-34|
+AffinityWave: graph node=3290 op=SET_ROWS name=cache_k_l35 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-35 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l35
+AffinityWave: graph node=3292 op=SET_ROWS name=cache_v_l35 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-35 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l35
+AffinityWave: graph node=3295 op=VIEW name=cache_k_l35 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l35||
+AffinityWave: graph node=3296 op=PERMUTE name=cache_k_l35 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l35 (view)||
+AffinityWave: graph node=3297 op=VIEW name=cache_v_l35 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l35||
+AffinityWave: graph node=3298 op=PERMUTE name=cache_v_l35 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l35 (view)||
+AffinityWave: graph node=3308 op=MUL name=attn_post_norm-35 ne=2048,1024,1,1 split=1 src=norm-35|blk.35.post_attention_norm.weight|
+AffinityWave: graph node=3320 op=RESHAPE name=attn_post_norm-35 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-35||
+AffinityWave: graph node=3340 op=ADD name=ffn_moe_out-35 ne=2048,1024,1,1 split=1 src=node_3340|ffn_moe_weighted-35 (view)|
+AffinityWave: graph node=3349 op=ADD name=l_out-35 ne=2048,1024,1,1 split=1 src=ffn_out-35|attn_residual-35|
+AffinityWave: graph node=3352 op=RESHAPE name=cache_r_l36 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l36||
+AffinityWave: graph node=3353 op=VIEW name=cache_r_l36 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l36 (reshaped)||
+AffinityWave: graph node=3354 op=SCALE name=cache_r_l36 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l36 (reshaped) (view)||
+AffinityWave: graph node=3357 op=VIEW name=cache_r_l36 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l36||
+AffinityWave: graph node=3358 op=CPY name=cache_r_l36 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_3357|cache_r_l36 (view)|
+AffinityWave: graph node=3367 op=RESHAPE name=cache_s_l36 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l36||
+AffinityWave: graph node=3368 op=VIEW name=cache_s_l36 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l36 (reshaped)||
+AffinityWave: graph node=3369 op=SCALE name=cache_s_l36 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l36 (reshaped) (view)||
+AffinityWave: graph node=3372 op=VIEW name=cache_s_l36 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l36||
+AffinityWave: graph node=3373 op=CPY name=cache_s_l36 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_3372|cache_s_l36 (view)|
+AffinityWave: graph node=3393 op=VIEW name=cache_s_l36 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l36||
+AffinityWave: graph node=3394 op=CPY name=cache_s_l36 (view) (copy of new_state-36) ne=524288,1,1,1 split=MIRRORED src=new_state-36|cache_s_l36 (view)|
+AffinityWave: graph node=3402 op=RESHAPE name=final_output-36 ne=4096,1024,1,1 split=1 src=node_3402||
+AffinityWave: graph node=3407 op=MUL name=attn_post_norm-36 ne=2048,1024,1,1 split=1 src=norm-36|blk.36.post_attention_norm.weight|
+AffinityWave: graph node=3419 op=RESHAPE name=attn_post_norm-36 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-36||
+AffinityWave: graph node=3439 op=ADD name=ffn_moe_out-36 ne=2048,1024,1,1 split=1 src=node_3439|ffn_moe_weighted-36 (view)|
+AffinityWave: graph node=3448 op=ADD name=l_out-36 ne=2048,1024,1,1 split=1 src=ffn_out-36|attn_residual-36|
+AffinityWave: graph node=3451 op=RESHAPE name=cache_r_l37 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l37||
+AffinityWave: graph node=3452 op=VIEW name=cache_r_l37 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l37 (reshaped)||
+AffinityWave: graph node=3453 op=SCALE name=cache_r_l37 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l37 (reshaped) (view)||
+AffinityWave: graph node=3456 op=VIEW name=cache_r_l37 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l37||
+AffinityWave: graph node=3457 op=CPY name=cache_r_l37 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_3456|cache_r_l37 (view)|
+AffinityWave: graph node=3466 op=RESHAPE name=cache_s_l37 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l37||
+AffinityWave: graph node=3467 op=VIEW name=cache_s_l37 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l37 (reshaped)||
+AffinityWave: graph node=3468 op=SCALE name=cache_s_l37 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l37 (reshaped) (view)||
+AffinityWave: graph node=3471 op=VIEW name=cache_s_l37 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l37||
+AffinityWave: graph node=3472 op=CPY name=cache_s_l37 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_3471|cache_s_l37 (view)|
+AffinityWave: graph node=3492 op=VIEW name=cache_s_l37 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l37||
+AffinityWave: graph node=3493 op=CPY name=cache_s_l37 (view) (copy of new_state-37) ne=524288,1,1,1 split=MIRRORED src=new_state-37|cache_s_l37 (view)|
+AffinityWave: graph node=3501 op=RESHAPE name=final_output-37 ne=4096,1024,1,1 split=1 src=node_3501||
+AffinityWave: graph node=3506 op=MUL name=attn_post_norm-37 ne=2048,1024,1,1 split=1 src=norm-37|blk.37.post_attention_norm.weight|
+AffinityWave: graph node=3518 op=RESHAPE name=attn_post_norm-37 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-37||
+AffinityWave: graph node=3538 op=ADD name=ffn_moe_out-37 ne=2048,1024,1,1 split=1 src=node_3538|ffn_moe_weighted-37 (view)|
+AffinityWave: graph node=3547 op=ADD name=l_out-37 ne=2048,1024,1,1 split=1 src=ffn_out-37|attn_residual-37|
+AffinityWave: graph node=3550 op=RESHAPE name=cache_r_l38 (reshaped) ne=24576,1,1,1 split=MIRRORED src=cache_r_l38||
+AffinityWave: graph node=3551 op=VIEW name=cache_r_l38 (reshaped) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l38 (reshaped)||
+AffinityWave: graph node=3552 op=SCALE name=cache_r_l38 (reshaped) (view) (view) ne=24576,1,1,1 split=MIRRORED src=cache_r_l38 (reshaped) (view)||
+AffinityWave: graph node=3555 op=VIEW name=cache_r_l38 (view) ne=24576,0,1,1 split=UNKNOWN src=cache_r_l38||
+AffinityWave: graph node=3556 op=CPY name=cache_r_l38 (view) (copy of ) ne=24576,0,1,1 split=UNKNOWN src=node_3555|cache_r_l38 (view)|
+AffinityWave: graph node=3565 op=RESHAPE name=cache_s_l38 (reshaped) ne=524288,1,1,1 split=MIRRORED src=cache_s_l38||
+AffinityWave: graph node=3566 op=VIEW name=cache_s_l38 (reshaped) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l38 (reshaped)||
+AffinityWave: graph node=3567 op=SCALE name=cache_s_l38 (reshaped) (view) (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l38 (reshaped) (view)||
+AffinityWave: graph node=3570 op=VIEW name=cache_s_l38 (view) ne=524288,0,1,1 split=UNKNOWN src=cache_s_l38||
+AffinityWave: graph node=3571 op=CPY name=cache_s_l38 (view) (copy of ) ne=524288,0,1,1 split=UNKNOWN src=node_3570|cache_s_l38 (view)|
+AffinityWave: graph node=3591 op=VIEW name=cache_s_l38 (view) ne=524288,1,1,1 split=MIRRORED src=cache_s_l38||
+AffinityWave: graph node=3592 op=CPY name=cache_s_l38 (view) (copy of new_state-38) ne=524288,1,1,1 split=MIRRORED src=new_state-38|cache_s_l38 (view)|
+AffinityWave: graph node=3600 op=RESHAPE name=final_output-38 ne=4096,1024,1,1 split=1 src=node_3600||
+AffinityWave: graph node=3605 op=MUL name=attn_post_norm-38 ne=2048,1024,1,1 split=1 src=norm-38|blk.38.post_attention_norm.weight|
+AffinityWave: graph node=3617 op=RESHAPE name=attn_post_norm-38 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-38||
+AffinityWave: graph node=3637 op=ADD name=ffn_moe_out-38 ne=2048,1024,1,1 split=1 src=node_3637|ffn_moe_weighted-38 (view)|
+AffinityWave: graph node=3646 op=ADD name=l_out-38 ne=2048,1024,1,1 split=1 src=ffn_out-38|attn_residual-38|
+AffinityWave: graph node=3662 op=SET_ROWS name=cache_k_l39 (view) ne=512,1024,1,1 split=MIRRORED src=Kcur-39 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0|cache_k_l39
+AffinityWave: graph node=3664 op=SET_ROWS name=cache_v_l39 (view) ne=512,1024,1,1 split=MIRRORED src=Vcur-39 (view)|Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0|cache_v_l39
+AffinityWave: graph node=3667 op=VIEW name=cache_k_l39 (view) ne=256,2,1024,1 split=MIRRORED src=cache_k_l39||
+AffinityWave: graph node=3668 op=PERMUTE name=cache_k_l39 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_k_l39 (view)||
+AffinityWave: graph node=3669 op=VIEW name=cache_v_l39 (view) ne=256,2,1024,1 split=MIRRORED src=cache_v_l39||
+AffinityWave: graph node=3670 op=PERMUTE name=cache_v_l39 (view) (permuted) ne=256,1024,2,1 split=MIRRORED src=cache_v_l39 (view)||
+AffinityWave: graph node=3680 op=MUL name=attn_post_norm-39 ne=2048,1024,1,1 split=1 src=norm-39|blk.39.post_attention_norm.weight|
+AffinityWave: graph node=3692 op=RESHAPE name=attn_post_norm-39 (reshaped) ne=2048,1,1024,1 split=2 src=attn_post_norm-39||
+AffinityWave: graph node=3712 op=ADD name=ffn_moe_out-39 ne=2048,1024,1,1 split=1 src=node_3712|ffn_moe_weighted-39 (view)|
+AffinityWave: graph node=3721 op=ADD name=l_out-39 ne=2048,1024,1,1 split=1 src=ffn_out-39|attn_residual-39|
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)#model.input_embed#0 ne=2048,1024,1,1 split=1
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0 ne=1,1,1,1 split=MIRRORED
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)# (view)#0 ne=0,1,1,1 split=UNKNOWN
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)#inp_pos#0 ne=4096,1,1,1 split=0
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_k_idxs#0 ne=1024,1,1,1 split=0
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)#self_v_idxs#0 ne=1024,1,1,1 split=0
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)#attn_inp_kq_mask#0 ne=1024,1024,1,1 split=1
+AffinityWave: graph external name=Meta(CUDA0,CUDA1,CUDA2,CUDA3)#out_ids#0 ne=1,1,1,1 split=MIRRORED
+AffinityWave: pinned lane 0 inputs=7 bytes=2.5 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=2.5 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=2.5 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=2.5 MiB
+AffinityWave: pre-capturing exact cell graphs with 2 untimed wave passes
+AffinityWave: live service entered cells=1
+AffinityWave: live service scratch ready max_tokens=256
+AffinityWave: live service inputs queued
+AffinityWave: live service owners queued
+AffinityWave: live service first call complete
+AffinityWave: dense lane microbench mode=service tokens=1024 cells=160 corridors=248.4 MiB elapsed=573.997 ms projected=1784.0 tok/s; output withheld
+test_prompt: failed to decode prompt batch, res = 2
+llama_bench: error: failed to run prompt warmup

@@ -1,0 +1,65 @@
+0.01.104.655 I llama_completion: llama backend init
+0.01.104.665 I llama_completion: load the model and apply lora adapter, if any
+0.01.104.757 W common_fit_params: failed to fit params to free device memory: llama_params_fit is not implemented for SPLIT_MODE_TENSOR, abort
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+0.22.467.026 I llama_completion: llama threadpool init, n_threads = 12
+0.22.469.787 I llama_completion: chat template is available, enabling conversation mode (disable it with -no-cnv)
+0.22.469.790 W *** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
+0.22.469.869 I llama_completion: chat template example:
+<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+
+0.22.469.869 I 
+0.22.469.951 I system_info: n_threads = 12 (n_threads_batch = 12) / 24 | CUDA : ARCHS = 600 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.22.469.954 I 
+0.22.470.074 I llama_completion: interactive mode on.
+0.22.470.079 I sampler seed: 1234
+0.22.470.091 I sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = -1
+	top_k = 1, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.22.470.098 I sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+0.22.470.099 I generate: n_ctx = 2048, n_batch = 512, n_predict = 32, n_keep = 0
+0.22.470.099 I 
+0.22.470.100 I == Running in interactive mode. ==
+0.22.470.100 I  - Press Ctrl+C to interject at any time.
+0.22.470.100 I  - Press Return to return control to the AI.
+ - To return control without starting a new line, end your input with '/'.
+ - If you want to submit another line, end your input with '\'.
+0.22.470.100 I  - Not using system message. To change it, set a different value via -sys PROMPT
+0.22.470.100 I 
+AffinityWave: GPU0 device-plan weight 0x70411ef6ab00 T64=0
+AffinityWave: GPU1 device-plan weight 0x703ee8f6ab00 T64=0
+AffinityWave: GPU2 device-plan weight 0x703cb2f6ab00 T64=0
+AffinityWave: GPU3 device-plan weight 0x703a7cf6ab00 T64=0
+0.23.062.783 I common_perf_print:    sampling time =      10.17 ms
+0.23.062.784 I common_perf_print:    samplers time =       2.09 ms /    23 tokens
+0.23.062.788 I common_perf_print:        load time =   21112.67 ms
+0.23.062.790 I common_perf_print: prompt eval time =     230.23 ms /     9 tokens (   25.58 ms per token,    39.09 tokens per second)
+0.23.062.792 I common_perf_print:        eval time =     351.83 ms /    13 runs   (   27.06 ms per token,    36.95 tokens per second)
+0.23.062.793 I common_perf_print:       total time =     595.76 ms /    22 tokens
+0.23.062.794 I common_perf_print: unaccounted time =       3.53 ms /   0.6 %      (total - sampling - prompt eval - eval) / (total)
+0.23.062.794 I common_perf_print:    graphs reused =         12

@@ -1,0 +1,51 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -3230,6 +3230,47 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, const ggml_ten
+                 fflush(moe_hist_f);
+             }
+         }
++
++        // Optional compact token-level routing trace for AffinityWave Phase 0.
++        // Capture on the host-sort path with GGML_CUDA_MOE_PLAN disabled.
++        static const char * aw_trace_path = getenv("GGML_CUDA_AW_TRACE");
++        if (aw_trace_path != nullptr && dev_cur == 0) {
++            int layer = -1;
++            if (sscanf(src0->name, "blk.%d.ffn_gate_exps.weight", &layer) == 1 &&
++                layer >= 0 && layer < 65536 && ne12 >= 0 && ne12 <= UINT32_MAX &&
++                n_expert_used >= 0 && n_expert_used <= UINT16_MAX) {
++                static FILE * aw_trace_f = nullptr;
++                if (aw_trace_f == nullptr) {
++                    aw_trace_f = fopen(aw_trace_path, "wb");
++                    if (aw_trace_f != nullptr) {
++                        static const char magic[8] = {'A', 'W', 'T', 'R', 'V', '0', '0', '1'};
++                        if (fwrite(magic, sizeof(magic), 1, aw_trace_f) != 1) {
++                            fclose(aw_trace_f);
++                            aw_trace_f = nullptr;
++                        }
++                    }
++                }
++                if (aw_trace_f != nullptr) {
++                    const uint16_t layer_u16 = (uint16_t) layer;
++                    const uint32_t ntok_u32  = (uint32_t) ne12;
++                    const uint16_t used_u16  = (uint16_t) n_expert_used;
++                    bool ok = fwrite(&layer_u16, sizeof(layer_u16), 1, aw_trace_f) == 1 &&
++                              fwrite(&ntok_u32,  sizeof(ntok_u32),  1, aw_trace_f) == 1 &&
++                              fwrite(&used_u16,  sizeof(used_u16),  1, aw_trace_f) == 1;
++                    for (int64_t i12 = 0; ok && i12 < ne12; ++i12) {
++                        for (int64_t iex = 0; ok && iex < n_expert_used; ++iex) {
++                            const int32_t expert = *(const int32_t *)
++                                (ids_read + i12*ids->nb[1] + iex*ids->nb[0]);
++                            const uint16_t expert_u16 = (uint16_t) expert;
++                            ok = expert >= 0 && expert < 65536 &&
++                                 fwrite(&expert_u16, sizeof(expert_u16), 1, aw_trace_f) == 1;
++                        }
++                    }
++                    fflush(aw_trace_f);
++                    GGML_ASSERT(ok && "failed to write GGML_CUDA_AW_TRACE");
++                }
++            }
++        }
+ 
+         // where pass 2 writes; on the pinned path these point straight into the H2D staging
+         int32_t * to_sorted_out   = nullptr;
