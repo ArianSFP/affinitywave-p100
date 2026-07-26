@@ -32,7 +32,8 @@ cmake -S . -B ../build-p100-pairwave \
 
 cmake --build ../build-p100-pairwave -j \
   --target llama-bench llama-perplexity \
-           llama-affinity-wave-bench test-backend-ops
+           llama-affinity-wave-bench test-backend-ops \
+           test-pairfold-scheduler
 ```
 
 The archived [toolchain record](evidence/stitchrail/static/toolchain.txt) is
@@ -150,3 +151,68 @@ The archived harness supports:
 
 Its paths are the original rig paths. Copy and edit it for another machine;
 do not run it blindly.
+
+## PairFold checkpoint
+
+The later default-off PairFold runtime uses the same qualified arithmetic
+stack plus:
+
+```text
+GGML_CUDA_AW_HEADFOLD=1
+GGML_CUDA_AW_HEADFOLD_GDN=1
+GGML_CUDA_AW_HEADFOLD_ATTENTION=1
+GGML_CUDA_AW_HEADFOLD_SPLIT_PRE=1
+GGML_CUDA_AW_PAIRWAVE_MANIFEST=<absolute manifest path>
+GGML_CUDA_AW_PAIRWAVE_SERVICE=0
+GGML_CUDA_AW_PAIRWAVE_BUNDLE=0
+GGML_CUDA_AW_PAIRFOLD=1
+```
+
+`GGML_CUDA_AW_PAIRFOLD_SERIAL=1` selects the test-only serial arithmetic
+control. The normal pipelined scheduler uses
+`GGML_CUDA_AW_PAIRFOLD_SERIAL=0`.
+
+The original-rig guarded harness is:
+
+```text
+bench/run-pairfold.sh
+```
+
+It contains the production environment, `/tmp/affinitywave-4gpu.lock`,
+process exclusion, CPU taskset, timeout, and `.xsession-errors` watchdog.
+Its `ROOT`, `BUILD`, `REFERENCE`, `MODEL`, and `CORPUS` constants are
+absolute original-rig paths. Adapt them before using the script elsewhere.
+The referenced EPLB and AffinityWave placement files are external
+machine-specific runtime inputs.
+
+Run the CPU scheduler test first:
+
+```bash
+ctest --test-dir <build-dir> \
+  -R '^test-pairfold-scheduler$' \
+  --output-on-failure
+```
+
+Run the c512 saved-logits oracle:
+
+```bash
+./bench/run-pairfold.sh pipeline-ppl 512 \
+  checkpoint-exact-pipeline-c512-v1
+```
+
+Run an accurate warm pp8128 measurement:
+
+```bash
+PAIRFOLD_REPS=6 ./bench/run-pairfold.sh pipeline 8128 \
+  warm-pipeline-pp8128-v1
+
+PAIRFOLD_REPS=6 ./bench/run-pairfold.sh diagonal 8128 \
+  warm-diagonal-pp8128-v1
+```
+
+Both commands deliberately retain the full-shape initialization call as
+sample 0. Discard sample 0 and take the median of samples 1 through 5. Do
+not use llama-bench's aggregate because it includes cold initialization.
+
+The measured checkpoint and its limitations are in
+[PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md).

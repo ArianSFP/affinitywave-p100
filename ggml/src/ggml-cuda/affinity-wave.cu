@@ -8040,6 +8040,97 @@ __global__ static void aw_pair_sum_groups_peer_panel_p100(
     }
 }
 
+template <bool NCCL_ORDER, int ITEMS>
+__global__ static void aw_pair_sum_groups_local_panel_p100(
+        const uint16_t * group0,
+        const uint16_t * group1,
+        const uint16_t * group2,
+        const uint16_t * group3,
+        float * output,
+        int tokens,
+        int order_token_offset,
+        int panel_n,
+        int output_col) {
+    static_assert(ITEMS == 2 || ITEMS == 4);
+    const uint16_t * groups[AW_GPU_COUNT] = {
+        group0, group1, group2, group3
+    };
+    for (int token = blockIdx.x; token < tokens;
+            token += gridDim.x) {
+        const int col0 = threadIdx.x*ITEMS;
+        if (col0 >= panel_n) {
+            continue;
+        }
+
+        uint32_t packed2[AW_GPU_COUNT];
+        uint2 packed4[AW_GPU_COUNT];
+        #pragma unroll
+        for (int logical = 0; logical < AW_GPU_COUNT;
+                ++logical) {
+            const uint16_t * source =
+                    groups[logical] +
+                    (size_t) token*panel_n + col0;
+            if constexpr (ITEMS == 4) {
+                packed4[logical] =
+                        *(const uint2 *) source;
+            } else {
+                packed2[logical] =
+                        *(const uint32_t *) source;
+            }
+        }
+
+        float values[AW_GPU_COUNT][ITEMS];
+        #pragma unroll
+        for (int logical = 0; logical < AW_GPU_COUNT;
+                ++logical) {
+            if constexpr (ITEMS == 4) {
+                values[logical][0] = aw_bf16_to_float(
+                        (uint16_t) packed4[logical].x);
+                values[logical][1] = aw_bf16_to_float(
+                        (uint16_t) (packed4[logical].x >> 16));
+                values[logical][2] = aw_bf16_to_float(
+                        (uint16_t) packed4[logical].y);
+                values[logical][3] = aw_bf16_to_float(
+                        (uint16_t) (packed4[logical].y >> 16));
+            } else {
+                values[logical][0] = aw_bf16_to_float(
+                        (uint16_t) packed2[logical]);
+                values[logical][1] = aw_bf16_to_float(
+                        (uint16_t) (packed2[logical] >> 16));
+            }
+        }
+
+        const int first = NCCL_ORDER ?
+                (((order_token_offset + token) >> 4) + 1) &
+                    (AW_GPU_COUNT - 1) : 0;
+        float sum[ITEMS] = {};
+        #pragma unroll
+        for (int step = 0; step < AW_GPU_COUNT; ++step) {
+            const int logical =
+                    (first + step) & (AW_GPU_COUNT - 1);
+            #pragma unroll
+            for (int item = 0; item < ITEMS; ++item) {
+                sum[item] = aw_bf16_to_float(
+                        aw_float_to_bf16(
+                            __fadd_rn(
+                                sum[item],
+                                values[logical][item])));
+            }
+        }
+
+        float * destination =
+                output + (size_t) token*AW_EMBD +
+                output_col + col0;
+        if constexpr (ITEMS == 4) {
+            *(float4 *) destination = make_float4(
+                    sum[0], sum[1], sum[2], sum[3]);
+        } else {
+            *(float2 *) destination =
+                    make_float2(sum[0], sum[1]);
+        }
+    }
+}
+
 __global__ static void aw_r44_gather_selected_inputs(
         const float * input0,
         const float * input1,
@@ -9391,10 +9482,21 @@ struct aw_diagonal_scratch {
     std::array<cudaEvent_t, AW_DIAGONAL_RING_SLOTS> recv_free{};
 
     void ensure(int new_device, int new_tokens, int panel_n) {
+        const int previous_tokens = tokens;
         device = new_device;
         tokens = std::max(tokens, new_tokens);
         aw_cuda_throw(cudaSetDevice(device),
                 "set diagonal scratch device");
+        size_t free_before = 0;
+        size_t total_bytes = 0;
+        const bool report_memory =
+                aw_env_on(getenv("GGML_CUDA_AW_MEMORY")) &&
+                tokens > previous_tokens;
+        if (report_memory) {
+            aw_cuda_throw(cudaMemGetInfo(
+                        &free_before, &total_bytes),
+                    "query diagonal memory before allocation");
+        }
         const size_t max_routes = (size_t) tokens*8;
         for (aw_device_buffer & buffer : input) {
             buffer.ensure((size_t) tokens*AW_EMBD*sizeof(float));
@@ -9456,6 +9558,17 @@ struct aw_diagonal_scratch {
                         (void *) publish_stream, name);
             }
         }
+        if (report_memory) {
+            size_t free_after = 0;
+            aw_cuda_throw(cudaMemGetInfo(
+                        &free_after, &total_bytes),
+                    "query diagonal memory after allocation");
+            fprintf(stderr,
+                    "AffinityWave: diagonal memory device=%d free-before=%zu free-after=%zu used-after=%zu allocation-delta=%zu arena=%zu\n",
+                    device, free_before, free_after,
+                    total_bytes - free_after,
+                    free_before - free_after, bytes());
+        }
     }
 
     size_t bytes() const {
@@ -9504,13 +9617,26 @@ struct aw_pair_scratch {
     aw_device_buffer desc_experts;
     aw_device_buffer route_meta;
     aw_device_buffer partial;
+    aw_device_buffer recv;
+    std::array<cudaEvent_t, AW_GPU_COUNT> copied{};
 
     void ensure(int new_device, int new_tokens,
             int panel_n) {
+        const int previous_tokens = tokens;
         device = new_device;
         tokens = std::max(tokens, new_tokens);
         aw_cuda_throw(cudaSetDevice(device),
                 "set PairWave scratch device");
+        size_t free_before = 0;
+        size_t total_bytes = 0;
+        const bool report_memory =
+                aw_env_on(getenv("GGML_CUDA_AW_MEMORY")) &&
+                tokens > previous_tokens;
+        if (report_memory) {
+            aw_cuda_throw(cudaMemGetInfo(
+                        &free_before, &total_bytes),
+                    "query PairWave memory before allocation");
+        }
         const size_t max_routes =
                 (size_t) tokens*8;
         const size_t descriptors =
@@ -9534,13 +9660,45 @@ struct aw_pair_scratch {
         partial.ensure(
                 (size_t) AW_GPU_COUNT*tokens*
                 panel_n*sizeof(uint16_t));
+        recv.ensure(
+                (size_t) AW_GPU_COUNT*tokens*
+                panel_n*sizeof(uint16_t));
+        if (copied[0] == nullptr) {
+            for (cudaEvent_t & event : copied) {
+                aw_cuda_throw(cudaEventCreateWithFlags(
+                            &event, cudaEventDisableTiming),
+                        "create PairWave owner-copy event");
+            }
+        }
+        if (report_memory) {
+            size_t free_after = 0;
+            aw_cuda_throw(cudaMemGetInfo(
+                        &free_after, &total_bytes),
+                    "query PairWave memory after allocation");
+            fprintf(stderr,
+                    "AffinityWave: PairWave memory device=%d free-before=%zu free-after=%zu used-after=%zu allocation-delta=%zu arena=%zu\n",
+                    device, free_before, free_after,
+                    total_bytes - free_after,
+                    free_before - free_after, bytes());
+        }
     }
 
     size_t bytes() const {
         return input.size() + gate.size() +
                 up.size() + weight_ptrs.size() +
                 desc_experts.size() + route_meta.size() +
-                partial.size();
+                partial.size() + recv.size();
+    }
+
+    ~aw_pair_scratch() {
+        if (device >= 0) {
+            (void) cudaSetDevice(device);
+        }
+        if (copied[0] != nullptr) {
+            for (cudaEvent_t event : copied) {
+                (void) cudaEventDestroy(event);
+            }
+        }
     }
 };
 
@@ -11150,6 +11308,425 @@ int ggml_cuda_affinity_wave_headfold_gdn(
     }
 }
 
+int ggml_cuda_affinity_wave_pairfold_gdn(
+        void * const * streams_ptr,
+        const int32_t * devices,
+        const int32_t * groups,
+        const ggml_cuda_aw_headfold_gdn_lane * lanes,
+        int32_t n_lanes,
+        char * error,
+        size_t error_capacity) {
+    try {
+        if (streams_ptr == nullptr || devices == nullptr ||
+                groups == nullptr || lanes == nullptr ||
+                n_lanes != 2 ||
+                devices[0] < 0 ||
+                devices[0] >= AW_GPU_COUNT ||
+                devices[1] < 0 ||
+                devices[1] >= AW_GPU_COUNT ||
+                devices[0] == devices[1] ||
+                devices[0]/2 != devices[1]/2) {
+            throw std::runtime_error(
+                    "invalid PairFold GDN request");
+        }
+        std::array<bool, AW_GPU_COUNT> group_seen{};
+        for (int i = 0; i < AW_GPU_COUNT; ++i) {
+            if (groups[i] < 0 || groups[i] >= AW_GPU_COUNT ||
+                    group_seen[groups[i]]) {
+                throw std::runtime_error(
+                        "invalid PairFold GDN head groups");
+            }
+            group_seen[groups[i]] = true;
+        }
+        const int tokens = lanes[0].tokens;
+        if (tokens < AW_HEADFOLD_PARTS ||
+                tokens % AW_HEADFOLD_PARTS != 0) {
+            throw std::runtime_error(
+                    "PairFold GDN tokens must be divisible by four");
+        }
+        for (int lane = 0; lane < n_lanes; ++lane) {
+            if (lanes[lane].tokens != tokens ||
+                    lanes[lane].qk_stride <
+                        AW_GDN_QK_HEADS*AW_GDN_HEAD_DIM ||
+                    lanes[lane].v_stride <
+                        AW_GDN_VALUE_HEADS*AW_GDN_HEAD_DIM ||
+                    lanes[lane].scalar_stride <
+                        AW_GDN_VALUE_HEADS ||
+                    lanes[lane].q == nullptr ||
+                    lanes[lane].k == nullptr ||
+                    lanes[lane].v == nullptr ||
+                    lanes[lane].gate == nullptr ||
+                    lanes[lane].beta == nullptr ||
+                    lanes[lane].state == nullptr ||
+                    lanes[lane].output == nullptr ||
+                    lanes[lane].state_output == nullptr) {
+                throw std::runtime_error(
+                        "invalid PairFold GDN lane descriptor");
+            }
+        }
+
+        const int segment_tokens = tokens/AW_HEADFOLD_PARTS;
+        std::array<cudaStream_t, 2> streams;
+        for (int lane = 0; lane < n_lanes; ++lane) {
+            const int device = devices[lane];
+            streams[lane] =
+                    (cudaStream_t) streams_ptr[device];
+            aw_cuda_throw(cudaSetDevice(device),
+                    "set PairFold GDN source device");
+            aw_headfold_gdn_states[device].ensure(
+                    device, segment_tokens);
+            aw_cuda_throw(cudaEventRecord(
+                        aw_headfold_gdn_states[device].
+                            input_ready,
+                        streams[lane]),
+                    "record PairFold GDN input ready");
+        }
+
+        constexpr size_t qk_panel_pitch =
+                (size_t) AW_HEADFOLD_QK_HEADS*
+                AW_GDN_HEAD_DIM*sizeof(float);
+        constexpr size_t value_panel_pitch =
+                (size_t) AW_HEADFOLD_VALUE_HEADS*
+                AW_GDN_HEAD_DIM*sizeof(float);
+        constexpr size_t value_output_pitch =
+                (size_t) AW_GDN_VALUE_HEADS*
+                AW_GDN_HEAD_DIM*sizeof(float);
+        constexpr size_t scalar_panel_pitch =
+                (size_t) AW_HEADFOLD_VALUE_HEADS*
+                sizeof(float);
+        constexpr size_t qk_width =
+                (size_t) AW_HEADFOLD_QK_HEADS*
+                AW_GDN_HEAD_DIM*sizeof(float);
+        constexpr size_t value_half_width =
+                (size_t) (AW_HEADFOLD_VALUE_HEADS/2)*
+                AW_GDN_HEAD_DIM*sizeof(float);
+        constexpr size_t scalar_half_width =
+                (size_t) (AW_HEADFOLD_VALUE_HEADS/2)*
+                sizeof(float);
+        constexpr size_t state_head_bytes =
+                (size_t) AW_GDN_HEAD_DIM*
+                AW_GDN_HEAD_DIM*sizeof(float);
+        constexpr size_t state_half_bytes =
+                (size_t) (AW_HEADFOLD_VALUE_HEADS/2)*
+                state_head_bytes;
+
+        for (int owner_slot = 0; owner_slot < 2;
+                ++owner_slot) {
+            const int owner = devices[owner_slot];
+            aw_cuda_throw(cudaSetDevice(owner),
+                    "set PairFold GDN owner device");
+            aw_headfold_gdn_state & state =
+                    aw_headfold_gdn_states[owner];
+            cudaStream_t stream = streams[owner_slot];
+            for (int source = 0; source < n_lanes;
+                    ++source) {
+                aw_cuda_throw(cudaStreamWaitEvent(
+                            stream,
+                            aw_headfold_gdn_states[
+                                devices[source]].input_ready,
+                            0),
+                        "wait for PairFold GDN source");
+            }
+
+            for (int group_slot = 0; group_slot < 2;
+                    ++group_slot) {
+                const int group =
+                        groups[owner_slot*2 + group_slot];
+                const size_t qk_source_col =
+                        (size_t) group*
+                        AW_HEADFOLD_QK_HEADS*
+                        AW_GDN_HEAD_DIM;
+                const size_t value_source_col0 =
+                        qk_source_col;
+                const size_t value_source_col1 =
+                        (size_t) (AW_GDN_QK_HEADS +
+                            group*AW_HEADFOLD_QK_HEADS)*
+                        AW_GDN_HEAD_DIM;
+                const size_t scalar_source_col0 =
+                        (size_t) group*
+                        AW_HEADFOLD_QK_HEADS;
+                const size_t scalar_source_col1 =
+                        (size_t) AW_GDN_QK_HEADS +
+                        group*AW_HEADFOLD_QK_HEADS;
+
+                aw_cuda_throw(cudaMemcpyAsync(
+                            state.state.get(),
+                            lanes[0].state +
+                                (size_t) group*
+                                (AW_HEADFOLD_VALUE_HEADS/2)*
+                                AW_GDN_HEAD_DIM*
+                                AW_GDN_HEAD_DIM,
+                            state_half_bytes,
+                            cudaMemcpyDefault, stream),
+                        "copy PairFold GDN initial state low");
+                aw_cuda_throw(cudaMemcpyAsync(
+                            (char *) state.state.get() +
+                                state_half_bytes,
+                            lanes[0].state +
+                                (size_t) (AW_GDN_QK_HEADS +
+                                    group*
+                                    (AW_HEADFOLD_VALUE_HEADS/2))*
+                                AW_GDN_HEAD_DIM*
+                                AW_GDN_HEAD_DIM,
+                            state_half_bytes,
+                            cudaMemcpyDefault, stream),
+                        "copy PairFold GDN initial state high");
+
+                for (int source = 0; source < n_lanes;
+                        ++source) {
+                    for (int part = 0;
+                            part < AW_HEADFOLD_PARTS;
+                            ++part) {
+                        const size_t token =
+                                (size_t) part*
+                                segment_tokens;
+                        const float * q_source =
+                                lanes[source].q +
+                                token*
+                                    lanes[source].qk_stride +
+                                qk_source_col;
+                        const float * k_source =
+                                lanes[source].k +
+                                token*
+                                    lanes[source].qk_stride +
+                                qk_source_col;
+                        const float * v_source =
+                                lanes[source].v +
+                                token*
+                                    lanes[source].v_stride;
+                        const float * gate_source =
+                                lanes[source].gate +
+                                token*
+                                    lanes[source].scalar_stride;
+                        const float * beta_source =
+                                lanes[source].beta +
+                                token*
+                                    lanes[source].scalar_stride;
+
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    state.q.get(),
+                                    qk_panel_pitch,
+                                    q_source,
+                                    (size_t)
+                                        lanes[source].qk_stride*
+                                        sizeof(float),
+                                    qk_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN Q");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    state.k.get(),
+                                    qk_panel_pitch,
+                                    k_source,
+                                    (size_t)
+                                        lanes[source].qk_stride*
+                                        sizeof(float),
+                                    qk_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN K");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    state.v.get(),
+                                    value_panel_pitch,
+                                    v_source +
+                                        value_source_col0,
+                                    (size_t)
+                                        lanes[source].v_stride*
+                                        sizeof(float),
+                                    value_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN V low");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    (char *) state.v.get() +
+                                        value_half_width,
+                                    value_panel_pitch,
+                                    v_source +
+                                        value_source_col1,
+                                    (size_t)
+                                        lanes[source].v_stride*
+                                        sizeof(float),
+                                    value_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN V high");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    state.gate.get(),
+                                    scalar_panel_pitch,
+                                    gate_source +
+                                        scalar_source_col0,
+                                    (size_t)
+                                        lanes[source].
+                                            scalar_stride*
+                                        sizeof(float),
+                                    scalar_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN gate low");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    (char *) state.gate.get() +
+                                        scalar_half_width,
+                                    scalar_panel_pitch,
+                                    gate_source +
+                                        scalar_source_col1,
+                                    (size_t)
+                                        lanes[source].
+                                            scalar_stride*
+                                        sizeof(float),
+                                    scalar_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN gate high");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    state.beta.get(),
+                                    scalar_panel_pitch,
+                                    beta_source +
+                                        scalar_source_col0,
+                                    (size_t)
+                                        lanes[source].
+                                            scalar_stride*
+                                        sizeof(float),
+                                    scalar_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN beta low");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    (char *) state.beta.get() +
+                                        scalar_half_width,
+                                    scalar_panel_pitch,
+                                    beta_source +
+                                        scalar_source_col1,
+                                    (size_t)
+                                        lanes[source].
+                                            scalar_stride*
+                                        sizeof(float),
+                                    scalar_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "gather PairFold GDN beta high");
+
+                        const dim3 grid(
+                                AW_HEADFOLD_VALUE_HEADS,
+                                1, AW_GDN_HEAD_DIM/4);
+                        const dim3 block(32, 4, 1);
+                        aw_headfold_gdn_segment<<<
+                                grid, block, 0, stream>>>(
+                                (const float *) state.q.get(),
+                                (const float *) state.k.get(),
+                                (const float *) state.v.get(),
+                                (const float *)
+                                    state.gate.get(),
+                                (const float *)
+                                    state.beta.get(),
+                                (float *) state.state.get(),
+                                (float *) state.output.get(),
+                                segment_tokens);
+
+                        float * output =
+                                lanes[source].output +
+                                token*
+                                AW_GDN_VALUE_HEADS*
+                                AW_GDN_HEAD_DIM;
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    output +
+                                        value_source_col0,
+                                    value_output_pitch,
+                                    state.output.get(),
+                                    value_panel_pitch,
+                                    value_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "scatter PairFold GDN output low");
+                        aw_cuda_throw(cudaMemcpy2DAsync(
+                                    output +
+                                        value_source_col1,
+                                    value_output_pitch,
+                                    (const char *)
+                                        state.output.get() +
+                                        value_half_width,
+                                    value_panel_pitch,
+                                    value_half_width,
+                                    segment_tokens,
+                                    cudaMemcpyDefault, stream),
+                                "scatter PairFold GDN output high");
+                    }
+                }
+
+                for (int destination = 0;
+                        destination < n_lanes;
+                        ++destination) {
+                    aw_cuda_throw(cudaMemcpyAsync(
+                                lanes[destination].
+                                    state_output +
+                                    (size_t) group*
+                                    (AW_HEADFOLD_VALUE_HEADS/2)*
+                                    AW_GDN_HEAD_DIM*
+                                    AW_GDN_HEAD_DIM,
+                                state.state.get(),
+                                state_half_bytes,
+                                cudaMemcpyDefault, stream),
+                            "scatter PairFold GDN state low");
+                    aw_cuda_throw(cudaMemcpyAsync(
+                                lanes[destination].
+                                    state_output +
+                                    (size_t)
+                                    (AW_GDN_QK_HEADS +
+                                     group*
+                                     (AW_HEADFOLD_VALUE_HEADS/2))*
+                                    AW_GDN_HEAD_DIM*
+                                    AW_GDN_HEAD_DIM,
+                                (const char *)
+                                    state.state.get() +
+                                    state_half_bytes,
+                                state_half_bytes,
+                                cudaMemcpyDefault, stream),
+                            "scatter PairFold GDN state high");
+                }
+            }
+            aw_cuda_throw(cudaGetLastError(),
+                    "launch PairFold GDN");
+            aw_cuda_throw(cudaEventRecord(
+                        state.output_done, stream),
+                    "record PairFold GDN owner done");
+        }
+
+        for (int destination = 0;
+                destination < n_lanes; ++destination) {
+            const int device = devices[destination];
+            aw_cuda_throw(cudaSetDevice(device),
+                    "set PairFold GDN destination device");
+            for (int owner = 0; owner < 2; ++owner) {
+                aw_cuda_throw(cudaStreamWaitEvent(
+                            streams[destination],
+                            aw_headfold_gdn_states[
+                                devices[owner]].output_done,
+                            0),
+                        "wait for PairFold GDN owner output");
+            }
+        }
+
+        static std::atomic<bool> reported{false};
+        if (!reported.exchange(true)) {
+            const size_t scratch =
+                    aw_headfold_gdn_states[devices[0]].q.size() +
+                    aw_headfold_gdn_states[devices[0]].k.size() +
+                    aw_headfold_gdn_states[devices[0]].v.size() +
+                    aw_headfold_gdn_states[devices[0]].gate.size() +
+                    aw_headfold_gdn_states[devices[0]].beta.size() +
+                    aw_headfold_gdn_states[devices[0]].output.size() +
+                    aw_headfold_gdn_states[devices[0]].state.size();
+            fprintf(stderr,
+                    "AffinityWave: PairFold GDN active tokens=%d segment=%d scratch=%.2f MiB/GPU\n",
+                    tokens, segment_tokens,
+                    scratch/(1024.0*1024.0));
+        }
+        return 0;
+    } catch (const std::exception & exception) {
+        aw_set_error(error, error_capacity, exception.what());
+        return 1;
+    }
+}
+
 int ggml_cuda_affinity_wave_r44_prefetch(
         int32_t layer,
         char * error,
@@ -11828,7 +12405,8 @@ static void aw_live_pairwave_panel(
         const aw_pairwave_manifest & manifest,
         int live_call,
         const char * debug_sync,
-        bool nccl_order_sum) {
+        bool nccl_order_sum,
+        bool pairfold_local) {
     constexpr int groups_per_active = 2;
     constexpr int descriptors_per_cell =
             groups_per_active*AW_PRIMARY_PER_GPU;
@@ -12413,25 +12991,71 @@ static void aw_live_pairwave_panel(
                 cell < n_cells; ++cell) {
             const int home =
                     cells[cell].home_device;
-            aw_cuda_throw(cudaSetDevice(home),
-                    "set PairWave output device");
-            cudaStream_t stream =
-                    streams[home];
-            aw_cuda_throw(cudaStreamWaitEvent(
-                        stream,
-                        aw_live_states[0][active0].
-                            compute_done, 0),
-                    "wait for PairWave owner 0");
-            aw_cuda_throw(cudaStreamWaitEvent(
-                        stream,
-                        aw_live_states[0][active1].
-                            compute_done, 0),
-                    "wait for PairWave owner 1");
             const int token_offset =
                     cell*stride_tokens;
             std::array<const uint16_t *, AW_GPU_COUNT>
                     group_partials{};
-            if (p100_exact) {
+            if (pairfold_local) {
+                aw_pair_scratch & home_scratch =
+                        aw_pair_scratch_states[home];
+                for (int logical = 0;
+                        logical < AW_GPU_COUNT; ++logical) {
+                    const int owner =
+                            placement.owners[logical];
+                    aw_cuda_throw(cudaSetDevice(owner),
+                            "set PairFold owner-return device");
+                    cudaStream_t copy_stream =
+                            aw_copy_streams.get(owner);
+                    aw_cuda_throw(cudaStreamWaitEvent(
+                                copy_stream,
+                                aw_live_states[0][owner].
+                                    compute_done, 0),
+                            "wait for PairFold owner partial");
+                    if (panel > 0) {
+                        aw_cuda_throw(cudaStreamWaitEvent(
+                                    copy_stream,
+                                    aw_live_states[0][home].
+                                        recv_free, 0),
+                                "wait for PairFold receive scratch");
+                    }
+                    const uint16_t * source =
+                            (const uint16_t *)
+                                aw_pair_scratch_states[
+                                    owner].partial.get() +
+                            ((size_t) logical*
+                                total_tokens +
+                             token_offset)*panel_n;
+                    uint16_t * destination =
+                            (uint16_t *)
+                                home_scratch.recv.get() +
+                            ((size_t) logical*
+                                total_tokens +
+                             token_offset)*panel_n;
+                    const size_t bytes =
+                            (size_t) cells[cell].tokens*
+                            panel_n*sizeof(uint16_t);
+                    if (owner == home) {
+                        aw_cuda_throw(cudaMemcpyAsync(
+                                    destination, source, bytes,
+                                    cudaMemcpyDeviceToDevice,
+                                    copy_stream),
+                                "copy PairFold local owner partial");
+                    } else {
+                        aw_cuda_throw(cudaMemcpyPeerAsync(
+                                    destination, home,
+                                    source, owner, bytes,
+                                    copy_stream),
+                                "copy PairFold peer owner partial");
+                    }
+                    aw_cuda_throw(cudaEventRecord(
+                                aw_pair_scratch_states[
+                                    owner].copied[logical],
+                                copy_stream),
+                            "record PairFold owner return");
+                    group_partials[logical] =
+                            destination;
+                }
+            } else if (p100_exact) {
                 for (int logical = 0;
                         logical < AW_GPU_COUNT; ++logical) {
                     const int owner =
@@ -12444,6 +13068,34 @@ static void aw_live_pairwave_panel(
                                 total_tokens +
                              token_offset)*panel_n;
                 }
+            }
+            aw_cuda_throw(cudaSetDevice(home),
+                    "set PairWave output device");
+            cudaStream_t stream =
+                    streams[home];
+            if (pairfold_local) {
+                for (int logical = 0;
+                        logical < AW_GPU_COUNT; ++logical) {
+                    const int owner =
+                            placement.owners[logical];
+                    aw_cuda_throw(cudaStreamWaitEvent(
+                                stream,
+                                aw_pair_scratch_states[
+                                    owner].copied[logical],
+                                0),
+                            "wait for PairFold owner return");
+                }
+            } else {
+                aw_cuda_throw(cudaStreamWaitEvent(
+                            stream,
+                            aw_live_states[0][active0].
+                                compute_done, 0),
+                        "wait for PairWave owner 0");
+                aw_cuda_throw(cudaStreamWaitEvent(
+                            stream,
+                            aw_live_states[0][active1].
+                                compute_done, 0),
+                        "wait for PairWave owner 1");
             }
             bool p100_pair_sum = p100_exact &&
                     ((uintptr_t) cells[cell].output %
@@ -12462,7 +13114,35 @@ static void aw_live_pairwave_panel(
                     exact_sum_width == 4) {
                 const int blocks =
                         std::min(cells[cell].tokens, 224);
-                if (nccl_order_sum) {
+                if (pairfold_local && nccl_order_sum) {
+                    aw_pair_sum_groups_local_panel_p100<
+                            true, 4><<<
+                            blocks, 128, 0, stream>>>(
+                                group_partials[0],
+                                group_partials[1],
+                                group_partials[2],
+                                group_partials[3],
+                                cells[cell].output,
+                                cells[cell].tokens,
+                                cells[cell].reserved*
+                                    stride_tokens,
+                                panel_n,
+                                panel*panel_n);
+                } else if (pairfold_local) {
+                    aw_pair_sum_groups_local_panel_p100<
+                            false, 4><<<
+                            blocks, 128, 0, stream>>>(
+                                group_partials[0],
+                                group_partials[1],
+                                group_partials[2],
+                                group_partials[3],
+                                cells[cell].output,
+                                cells[cell].tokens,
+                                cells[cell].reserved*
+                                    stride_tokens,
+                                panel_n,
+                                panel*panel_n);
+                } else if (nccl_order_sum) {
                     aw_pair_sum_groups_peer_panel_p100<
                             true, 4><<<
                             blocks, 128, 0, stream>>>(
@@ -12472,7 +13152,9 @@ static void aw_live_pairwave_panel(
                                 group_partials[3],
                                 cells[cell].output,
                                 cells[cell].tokens,
-                                cells[cell].home_device*
+                                (pairfold_local ?
+                                    cells[cell].reserved :
+                                    cells[cell].home_device)*
                                     stride_tokens,
                                 panel_n,
                                 panel*panel_n);
@@ -12486,7 +13168,9 @@ static void aw_live_pairwave_panel(
                                 group_partials[3],
                                 cells[cell].output,
                                 cells[cell].tokens,
-                                cells[cell].home_device*
+                                (pairfold_local ?
+                                    cells[cell].reserved :
+                                    cells[cell].home_device)*
                                     stride_tokens,
                                 panel_n,
                                 panel*panel_n);
@@ -12494,7 +13178,35 @@ static void aw_live_pairwave_panel(
             } else if (p100_pair_sum) {
                 const int blocks =
                         std::min(cells[cell].tokens, 448);
-                if (nccl_order_sum) {
+                if (pairfold_local && nccl_order_sum) {
+                    aw_pair_sum_groups_local_panel_p100<
+                            true, 2><<<
+                            blocks, 256, 0, stream>>>(
+                                group_partials[0],
+                                group_partials[1],
+                                group_partials[2],
+                                group_partials[3],
+                                cells[cell].output,
+                                cells[cell].tokens,
+                                cells[cell].reserved*
+                                    stride_tokens,
+                                panel_n,
+                                panel*panel_n);
+                } else if (pairfold_local) {
+                    aw_pair_sum_groups_local_panel_p100<
+                            false, 2><<<
+                            blocks, 256, 0, stream>>>(
+                                group_partials[0],
+                                group_partials[1],
+                                group_partials[2],
+                                group_partials[3],
+                                cells[cell].output,
+                                cells[cell].tokens,
+                                cells[cell].reserved*
+                                    stride_tokens,
+                                panel_n,
+                                panel*panel_n);
+                } else if (nccl_order_sum) {
                     aw_pair_sum_groups_peer_panel_p100<
                             true, 2><<<
                             blocks, 256, 0, stream>>>(
@@ -12504,7 +13216,9 @@ static void aw_live_pairwave_panel(
                                 group_partials[3],
                                 cells[cell].output,
                                 cells[cell].tokens,
-                                cells[cell].home_device*
+                                (pairfold_local ?
+                                    cells[cell].reserved :
+                                    cells[cell].home_device)*
                                     stride_tokens,
                                 panel_n,
                                 panel*panel_n);
@@ -12518,7 +13232,9 @@ static void aw_live_pairwave_panel(
                                 group_partials[3],
                                 cells[cell].output,
                                 cells[cell].tokens,
-                                cells[cell].home_device*
+                                (pairfold_local ?
+                                    cells[cell].reserved :
+                                    cells[cell].home_device)*
                                     stride_tokens,
                                 panel_n,
                                 panel*panel_n);
@@ -12545,7 +13261,9 @@ static void aw_live_pairwave_panel(
                             cells[cell].output,
                             total_tokens,
                             token_offset,
-                            cells[cell].home_device*
+                            (pairfold_local ?
+                                cells[cell].reserved :
+                                cells[cell].home_device)*
                                 stride_tokens,
                             cells[cell].tokens,
                             panel_n,
@@ -12572,7 +13290,9 @@ static void aw_live_pairwave_panel(
                             cells[cell].output,
                             total_tokens,
                             token_offset,
-                            cells[cell].home_device*
+                            (pairfold_local ?
+                                cells[cell].reserved :
+                                cells[cell].home_device)*
                                 stride_tokens,
                             cells[cell].tokens,
                             panel_n,
@@ -12640,7 +13360,10 @@ static void aw_live_pairwave_panel(
                     "copy PairWave output");
             aw_live_dump(service_dump,
                     "reduced-output-f32",
-                    layer, home, -1,
+                    layer,
+                    pairfold_local ?
+                        cells[cell].reserved : home,
+                    -1,
                     values.data(), count,
                     sizeof(float));
         }
@@ -12667,15 +13390,16 @@ static void aw_live_pairwave_panel(
     }
 }
 
-int ggml_cuda_affinity_wave_live_service(
+static int aw_live_service(
         void * const * streams_ptr,
         const ggml_cuda_aw_live_cell * cells,
         int32_t n_cells,
         char * error,
-        size_t error_capacity) {
+        size_t error_capacity,
+        bool pairfold_local) {
     try {
-        static int live_calls = 0;
-        const int live_call = live_calls++;
+        static std::atomic<int> live_calls{0};
+        const int live_call = live_calls.fetch_add(1);
         if (live_call == 0) {
             fprintf(stderr, "AffinityWave: live service entered cells=%d\n", n_cells);
         }
@@ -12703,6 +13427,7 @@ int ggml_cuda_affinity_wave_live_service(
                     "GGML_CUDA_AW_DIAGONAL_SERVICE must be 'legacy', 'panel512', 'panel1024', or 'panel2048'");
         }
         const bool diagonal_panel =
+                !pairfold_local &&
                 diagonal_service_env != nullptr &&
                 (strcmp(diagonal_service_env, "panel512") == 0 ||
                  strcmp(diagonal_service_env, "panel1024") == 0 ||
@@ -12816,7 +13541,7 @@ int ggml_cuda_affinity_wave_live_service(
         const bool nccl_order_sum =
                 bf16_partial &&
                 aw_env_on(getenv("GGML_CUDA_AW_NCCL_ORDER_SUM"));
-        const bool pairwave_service =
+        const bool pairwave_service = pairfold_local ||
                 aw_env_on(getenv(
                     "GGML_CUDA_AW_PAIRWAVE_SERVICE"));
         const bool direct_owner =
@@ -12944,7 +13669,10 @@ int ggml_cuda_affinity_wave_live_service(
                             "copy service input dump");
                     aw_live_dump(input_dump,
                             "service-input-f32",
-                            cells[cell].layer, home, -1,
+                            cells[cell].layer,
+                            pairfold_local ?
+                                cells[cell].reserved : home,
+                            -1,
                             values.data(), count,
                             sizeof(float));
                     const size_t slots =
@@ -12971,11 +13699,17 @@ int ggml_cuda_affinity_wave_live_service(
                             "copy service weight dump");
                     aw_live_dump(input_dump,
                             "service-ids-i32",
-                            cells[cell].layer, home, -1,
+                            cells[cell].layer,
+                            pairfold_local ?
+                                cells[cell].reserved : home,
+                            -1,
                             ids.data(), slots, sizeof(int32_t));
                     aw_live_dump(input_dump,
                             "service-weights-f32",
-                            cells[cell].layer, home, -1,
+                            cells[cell].layer,
+                            pairfold_local ?
+                                cells[cell].reserved : home,
+                            -1,
                             weights.data(), slots, sizeof(float));
                 }
             }
@@ -13065,7 +13799,8 @@ int ggml_cuda_affinity_wave_live_service(
             aw_live_pairwave_panel(
                     pair_streams, cells, n_cells,
                     *pairwave_manifest, live_call,
-                    debug_sync, nccl_order_sum);
+                    debug_sync, nccl_order_sum,
+                    pairfold_local);
             return 0;
         }
         constexpr int MAX_GROUP_CELLS = AW_GPU_COUNT;
@@ -14957,6 +15692,26 @@ int ggml_cuda_affinity_wave_live_service(
         aw_set_error(error, error_capacity, exception.what());
         return 1;
     }
+}
+
+int ggml_cuda_affinity_wave_live_service(
+        void * const * streams_ptr,
+        const ggml_cuda_aw_live_cell * cells,
+        int32_t n_cells,
+        char * error,
+        size_t error_capacity) {
+    return aw_live_service(streams_ptr, cells, n_cells,
+            error, error_capacity, false);
+}
+
+int ggml_cuda_affinity_wave_pairfold_service(
+        void * const * streams_ptr,
+        const ggml_cuda_aw_live_cell * cells,
+        int32_t n_cells,
+        char * error,
+        size_t error_capacity) {
+    return aw_live_service(streams_ptr, cells, n_cells,
+            error, error_capacity, true);
 }
 
 bool ggml_cuda_affinity_wave_t64_enabled() {

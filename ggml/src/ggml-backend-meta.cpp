@@ -4,6 +4,8 @@
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
 #include "ggml-cpp.h"
+#include "ggml-cuda/affinity-wave.cuh"
+#include "ggml-pairfold-scheduler.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1642,6 +1644,8 @@ struct ggml_backend_meta_pairwave_layer {
 
 struct ggml_backend_meta_pairwave_manifest {
     bool enabled = false;
+    std::string path;
+    uint64_t hash = 0;
     std::array<ggml_backend_meta_pairwave_layer, 40> layers{};
 };
 
@@ -1652,6 +1656,24 @@ ggml_backend_meta_load_pairwave_manifest() {
             getenv("GGML_CUDA_AW_PAIRWAVE_MANIFEST");
     if (path == nullptr || path[0] == '\0') {
         return manifest;
+    }
+    manifest.path = path;
+    {
+        std::ifstream bytes(path, std::ios::in |
+                std::ios::binary);
+        if (!bytes) {
+            throw std::runtime_error(
+                    std::string(
+                        "cannot open PairWave manifest: ") +
+                    path);
+        }
+        uint64_t hash = 1469598103934665603ull;
+        char value = 0;
+        while (bytes.get(value)) {
+            hash ^= (unsigned char) value;
+            hash *= 1099511628211ull;
+        }
+        manifest.hash = hash;
     }
     std::ifstream input(path);
     if (!input) {
@@ -1732,8 +1754,16 @@ ggml_backend_meta_load_pairwave_manifest() {
     }
     manifest.enabled = true;
     fprintf(stderr,
-            "AffinityWave: loaded PairWave manifest %s\n",
-            path);
+            "AffinityWave: loaded PairWave manifest %s fnv64=%016llx\n",
+            path, (unsigned long long) manifest.hash);
+    return manifest;
+}
+
+static const ggml_backend_meta_pairwave_manifest &
+ggml_backend_meta_pairwave_get_manifest() {
+    static const ggml_backend_meta_pairwave_manifest
+            manifest =
+                    ggml_backend_meta_load_pairwave_manifest();
     return manifest;
 }
 
@@ -1745,9 +1775,9 @@ static const std::vector<int32_t> * ggml_backend_meta_eplb_perm(
     static const std::unordered_map<int, std::vector<int32_t>>
             expert_maps = ggml_backend_meta_load_eplb_maps(
                     "GGML_CUDA_MOE_EPLB_EXPERT_MAP");
-    static const ggml_backend_meta_pairwave_manifest
+    const ggml_backend_meta_pairwave_manifest &
             pairwave =
-                    ggml_backend_meta_load_pairwave_manifest();
+                    ggml_backend_meta_pairwave_get_manifest();
     static const std::unordered_map<int, std::vector<int32_t>>
             pairwave_expert_maps = [&]() {
                 std::unordered_map<int,
@@ -2369,6 +2399,39 @@ using ggml_backend_meta_aw_headfold_gdn_t = int (*)(
         char * error,
         size_t error_capacity);
 
+using ggml_backend_meta_aw_pairfold_gdn_t = int (*)(
+        ggml_backend_t const * backends,
+        const int32_t * devices,
+        const int32_t * groups,
+        const ggml_backend_meta_aw_headfold_gdn_lane * lanes,
+        int32_t n_lanes,
+        char * error,
+        size_t error_capacity);
+
+using ggml_backend_meta_aw_pairfold_generation_t = int (*)(
+        ggml_backend_t const * backends,
+        int32_t generation,
+        int32_t action,
+        int32_t tokens,
+        char * error,
+        size_t error_capacity);
+
+using ggml_backend_meta_aw_pairfold_handoff_t = int (*)(
+        ggml_backend_t const * backends,
+        const ggml_cuda_aw_pairfold_handoff * handoff,
+        char * error,
+        size_t error_capacity);
+
+using ggml_backend_meta_aw_pairfold_copy_t = int (*)(
+        ggml_backend_t const * backends,
+        int32_t source,
+        int32_t destination,
+        const void * source_data,
+        void * destination_data,
+        size_t bytes,
+        char * error,
+        size_t error_capacity);
+
 using ggml_backend_meta_aw_corridor_copy_t = int (*)(
         ggml_backend_t backend_src,
         ggml_backend_t backend_dst,
@@ -2508,6 +2571,8 @@ struct ggml_backend_meta_context {
     uint64_t                    uid           = 0;
     int64_t                     aw_precaptured_tokens = -1;
     std::vector<ggml_backend_buffer_ptr> aw_input_snapshot_buffers;
+    std::vector<ggml_backend_buffer_ptr> aw_pairfold_input_snapshot_buffers;
+    int64_t                     aw_pairfold_generation_id = 0;
     std::unique_ptr<submit_pool> submit;
 
     void *                                      comm_ctx              = nullptr;
@@ -2518,8 +2583,14 @@ struct ggml_backend_meta_context {
     ggml_backend_tbo_begin_eval_t               tbo_begin_eval        = nullptr; // [TAG_META_TBO] optional
     ggml_backend_tbo_end_eval_t                 tbo_end_eval          = nullptr; // [TAG_META_TBO] optional
     ggml_backend_meta_aw_live_service_t         aw_live_service       = nullptr;
+    ggml_backend_meta_aw_live_service_t         aw_pairfold_service   = nullptr;
     ggml_backend_meta_aw_r44_prefetch_t         aw_r44_prefetch       = nullptr;
     ggml_backend_meta_aw_headfold_gdn_t         aw_headfold_gdn       = nullptr;
+    ggml_backend_meta_aw_pairfold_gdn_t         aw_pairfold_gdn       = nullptr;
+    ggml_backend_meta_aw_pairfold_generation_t  aw_pairfold_generation_fn = nullptr;
+    ggml_backend_meta_aw_pairfold_handoff_t     aw_pairfold_stage     = nullptr;
+    ggml_backend_meta_aw_pairfold_handoff_t     aw_pairfold_publish   = nullptr;
+    ggml_backend_meta_aw_pairfold_copy_t        aw_pairfold_copy      = nullptr;
     ggml_backend_meta_aw_corridor_copy_t        aw_corridor_copy      = nullptr;
     ggml_backend_meta_aw_corridor_wait_t        aw_corridor_wait      = nullptr;
     ggml_backend_meta_aw_trace_t                aw_trace              = nullptr;
@@ -2573,12 +2644,30 @@ struct ggml_backend_meta_context {
         aw_live_service = (ggml_backend_meta_aw_live_service_t)
             ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                 ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_live_service");
+        aw_pairfold_service = (ggml_backend_meta_aw_live_service_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_service");
         aw_r44_prefetch = (ggml_backend_meta_aw_r44_prefetch_t)
             ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                 ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_r44_prefetch");
         aw_headfold_gdn = (ggml_backend_meta_aw_headfold_gdn_t)
             ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                 ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_headfold_gdn");
+        aw_pairfold_gdn = (ggml_backend_meta_aw_pairfold_gdn_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_gdn");
+        aw_pairfold_generation_fn = (ggml_backend_meta_aw_pairfold_generation_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_generation");
+        aw_pairfold_stage = (ggml_backend_meta_aw_pairfold_handoff_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_stage");
+        aw_pairfold_publish = (ggml_backend_meta_aw_pairfold_handoff_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_publish");
+        aw_pairfold_copy = (ggml_backend_meta_aw_pairfold_copy_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_copy");
         aw_corridor_copy = (ggml_backend_meta_aw_corridor_copy_t)
             ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                 ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_corridor_copy");
@@ -2773,31 +2862,35 @@ static ggml_tensor * ggml_backend_meta_aw_view_root(ggml_tensor * tensor) {
 }
 
 struct ggml_backend_meta_aw_cell {
-    int layer;
-    int begin;
-    int expert_begin;
-    int expert_end;
-    int shared_begin;
-    int shared_raw;
-    int shared_end;
-    int post_begin;
-    int end;
-    int conv_input;
-    int conv_state_last;
-    int conv_state_update;
-    int conv_state_clear;
-    int conv;
-    int q_predelta;
-    int k_predelta;
-    int v_predelta;
-    int gate;
-    int beta;
-    int recurrent;
-    int new_state;
-    int state_update;
-    int state_clear;
-    int flash_attn;
-    int attention_state_end;
+    int layer               = -1;
+    int begin               = -1;
+    int expert_begin        = -1;
+    int expert_end          = -1;
+    int shared_begin        = -1;
+    int shared_raw          = -1;
+    int shared_end          = -1;
+    int post_begin          = -1;
+    int end                 = -1;
+    int conv_input          = -1;
+    int conv_state_last     = -1;
+    int conv_state_update   = -1;
+    int conv_state_clear    = -1;
+    int conv                = -1;
+    int q_predelta          = -1;
+    int k_predelta          = -1;
+    int v_predelta          = -1;
+    int gate                = -1;
+    int beta                = -1;
+    int recurrent           = -1;
+    int new_state           = -1;
+    int state_update        = -1;
+    int state_clear         = -1;
+    int flash_attn          = -1;
+    int attention_state_end = -1;
+    int attn_norm           = -1;
+    int attn_pregate        = -1;
+    int attn_output         = -1;
+    int attn_residual       = -1;
 };
 
 static bool ggml_backend_meta_aw_name_is(const ggml_tensor * tensor, const char * base, int layer) {
@@ -2817,10 +2910,9 @@ static std::vector<ggml_backend_meta_aw_cell> ggml_backend_meta_aw_partition(con
     int begin = 0;
 
     for (int layer = 0; ; ++layer) {
-        ggml_backend_meta_aw_cell cell = {
-            layer, begin, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1, -1
-        };
+        ggml_backend_meta_aw_cell cell;
+        cell.layer = layer;
+        cell.begin = begin;
         for (int i = begin; i < cgraph->n_nodes; ++i) {
             const ggml_tensor * node = cgraph->nodes[i];
             char conv_cache_name[GGML_MAX_NAME];
@@ -2865,6 +2957,29 @@ static std::vector<ggml_backend_meta_aw_cell> ggml_backend_meta_aw_partition(con
                 cell.state_update = i;
             } else if (node->op == GGML_OP_FLASH_ATTN_EXT) {
                 cell.flash_attn = i;
+            } else if (ggml_backend_meta_aw_name_is(
+                        node, "attn_norm", layer)) {
+                cell.attn_norm = i;
+            } else if (ggml_backend_meta_aw_name_is(
+                        node, "attn_pregate", layer)) {
+                cell.attn_pregate = i;
+            } else if (ggml_backend_meta_aw_name_is(
+                        node, "attn_output", layer)) {
+                cell.attn_output = i;
+            } else if (ggml_backend_meta_aw_name_is(
+                        node, "attn_residual", layer)) {
+                cell.attn_residual = i;
+                if (cell.attn_output < 0 &&
+                        node->src[0] != nullptr) {
+                    for (int source = begin;
+                            source < i; ++source) {
+                        if (cgraph->nodes[source] ==
+                                node->src[0]) {
+                            cell.attn_output = source;
+                            break;
+                        }
+                    }
+                }
             } else if (node->op == GGML_OP_SET_ROWS) {
                 char state_name[GGML_MAX_NAME];
                 snprintf(state_name, sizeof(state_name), "cache_v_l%d", layer);
@@ -2922,6 +3037,11 @@ static std::vector<ggml_backend_meta_aw_cell> ggml_backend_meta_aw_partition(con
         GGML_ASSERT((cell.recurrent < 0) == (cell.state_update < 0));
         GGML_ASSERT((cell.recurrent < 0) == (cell.state_clear < 0));
         GGML_ASSERT((cell.flash_attn < 0) == (cell.attention_state_end < 0));
+        GGML_ASSERT(cell.attn_norm >= cell.begin);
+        GGML_ASSERT((cell.flash_attn < 0) ==
+                (cell.attn_pregate < 0));
+        GGML_ASSERT(cell.attn_residual >= cell.begin &&
+                cell.attn_residual < cell.expert_begin);
         GGML_ASSERT(cell.attention_state_end < 0 ||
                 (cell.attention_state_end >= cell.begin && cell.attention_state_end < cell.flash_attn));
 
@@ -3491,7 +3611,101 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
         const bool verify_local = live_service && getenv("GGML_CUDA_AW_VERIFY_LOCAL") != nullptr &&
                 strcmp(getenv("GGML_CUDA_AW_VERIFY_LOCAL"), "0") != 0;
         const std::vector<ggml_backend_meta_aw_cell> cells = ggml_backend_meta_aw_partition(cgraph);
+        const char * pairfold_env = getenv("GGML_CUDA_AW_PAIRFOLD");
+        const bool pairfold_requested =
+                pairfold_env != nullptr &&
+                strcmp(pairfold_env, "0") != 0;
+        int64_t pairfold_lane_tokens = -1;
+        bool pairfold_ragged = false;
         if (cells.size() == 40 && n_backends == 4) {
+            pairfold_lane_tokens =
+                    backend_ctx->backend_configs[0].
+                        nodes[cells.front().expert_end]->ne[1];
+            for (size_t j = 1; j < n_backends; ++j) {
+                pairfold_ragged |=
+                        backend_ctx->backend_configs[j].
+                            nodes[cells.front().expert_end]->ne[1] !=
+                        pairfold_lane_tokens;
+            }
+        }
+        const bool pairfold_shape =
+                !pairfold_ragged &&
+                (pairfold_lane_tokens == 128 ||
+                 pairfold_lane_tokens == 512 ||
+                 pairfold_lane_tokens == 2032);
+        const bool pairfold_active =
+                pairfold_requested && pairfold_shape;
+        if (pairfold_requested && !pairfold_active) {
+            static std::atomic<bool> reported_pairfold_fallback{false};
+            if (!reported_pairfold_fallback.exchange(true)) {
+                fprintf(stderr,
+                        "AffinityWave: PairFold fallback: unsupported or ragged shape lanes=%zu cells=%zu lane-tokens=%lld\n",
+                        n_backends, cells.size(),
+                        (long long) pairfold_lane_tokens);
+            }
+        }
+        if (cells.size() == 40 && n_backends == 4) {
+            if (pairfold_active) {
+                auto env_is = [](const char * name,
+                        const char * value) {
+                    const char * actual = getenv(name);
+                    return actual != nullptr &&
+                            strcmp(actual, value) == 0;
+                };
+                const ggml_backend_meta_pairwave_manifest &
+                        pairwave =
+                            ggml_backend_meta_pairwave_get_manifest();
+                const char * failure = nullptr;
+                if (strcmp(pairfold_env, "1") != 0) {
+                    failure =
+                            "GGML_CUDA_AW_PAIRFOLD must be 1";
+                } else if (!live_service || !return_output ||
+                        !headfold || !headfold_gdn ||
+                        !headfold_attention) {
+                    failure =
+                            "PairFold requires service output with exact HeadFold recurrent and attention selectors";
+                } else if (!pairwave.enabled ||
+                        pairwave.path.empty() ||
+                        pairwave.path.front() != '/') {
+                    failure =
+                            "PairFold requires an absolute GGML_CUDA_AW_PAIRWAVE_MANIFEST";
+                } else if (!env_is(
+                            "GGML_CUDA_AW_P100_EXACT", "1") ||
+                        !env_is(
+                            "GGML_CUDA_AW_P100_EXACT_SUM_WIDTH",
+                            "4") ||
+                        !env_is("GGML_CUDA_AW_WIRE", "f32") ||
+                        !env_is("GGML_CUDA_AW_PARTIAL", "bf16") ||
+                        !env_is("GGML_CUDA_AW_Q8_LAYOUT",
+                            "t64k32") ||
+                        !env_is("GGML_CUDA_AW_Q8_ENGINE",
+                            "cohortrail") ||
+                        !env_is("GGML_CUDA_AW_DENSE_SELECTORS",
+                            "exact") ||
+                        !env_is("GGML_CUDA_AW_ROUTE_SCATTER",
+                            "deterministic")) {
+                    failure =
+                            "PairFold requires P100-exact F32/BF16 CohortRail selectors";
+                } else if (backend_ctx->aw_pairfold_service ==
+                            nullptr ||
+                        backend_ctx->aw_pairfold_gdn == nullptr ||
+                        backend_ctx->aw_pairfold_generation_fn ==
+                            nullptr ||
+                        backend_ctx->aw_pairfold_stage == nullptr ||
+                        backend_ctx->aw_pairfold_publish == nullptr ||
+                        backend_ctx->aw_pairfold_copy == nullptr ||
+                        backend_ctx->aw_corridor_copy == nullptr ||
+                        backend_ctx->aw_corridor_wait == nullptr) {
+                    failure =
+                            "PairFold CUDA callbacks are unavailable";
+                }
+                if (failure != nullptr) {
+                    fprintf(stderr,
+                            "AffinityWave: PairFold configuration rejected: %s\n",
+                            failure);
+                    return GGML_STATUS_FAILED;
+                }
+            }
             GGML_ASSERT(!headfold || (backend_ctx->aw_headfold_gdn != nullptr &&
                     backend_ctx->aw_corridor_copy != nullptr &&
                     backend_ctx->aw_corridor_wait != nullptr));
@@ -3537,13 +3751,21 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             }
             struct input_snapshot {
                 ggml_tensor * tensor;
+                const ggml_tensor * meta_tensor;
                 void * original_data;
                 size_t offset;
                 ggml_tensor persistent;
+                ggml_tensor pairfold;
             };
             std::array<std::vector<input_snapshot>, 4> input_snapshots;
             if (backend_ctx->aw_input_snapshot_buffers.size() != n_backends) {
                 backend_ctx->aw_input_snapshot_buffers.resize(n_backends);
+            }
+            if (pairfold_active &&
+                    backend_ctx->aw_pairfold_input_snapshot_buffers.size() !=
+                        n_backends) {
+                backend_ctx->aw_pairfold_input_snapshot_buffers.resize(
+                        n_backends);
             }
             struct input_snapshot_restore {
                 std::array<std::vector<input_snapshot>, 4> * snapshots;
@@ -3569,9 +3791,16 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                             auto it = std::find_if(input_snapshots[j].begin(), input_snapshots[j].end(),
                                     [&](const input_snapshot & snapshot) { return snapshot.tensor == src; });
                             if (it == input_snapshots[j].end()) {
+                                const ggml_tensor * meta_src =
+                                        cgraph->nodes[i]->src[s];
+                                while (meta_src != nullptr &&
+                                        meta_src->view_src != nullptr) {
+                                    meta_src = meta_src->view_src;
+                                }
                                 snapshot_bytes = GGML_PAD(snapshot_bytes, 256);
                                 input_snapshot snapshot = {};
                                 snapshot.tensor = src;
+                                snapshot.meta_tensor = meta_src;
                                 snapshot.original_data = src->data;
                                 snapshot.offset = snapshot_bytes;
                                 input_snapshots[j].push_back(snapshot);
@@ -3587,19 +3816,55 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 }
                 GGML_ASSERT(snapshot_buffer != nullptr);
                 char * base = (char *) ggml_backend_buffer_get_base(snapshot_buffer.get());
+                char * pairfold_base = nullptr;
+                ggml_backend_buffer_t pairfold_buffer = nullptr;
+                if (pairfold_active) {
+                    ggml_backend_buffer_ptr & buffer =
+                            backend_ctx->
+                                aw_pairfold_input_snapshot_buffers[j];
+                    if (buffer == nullptr ||
+                            ggml_backend_buffer_get_size(
+                                buffer.get()) <
+                            snapshot_bytes) {
+                        buffer.reset(
+                                ggml_backend_alloc_buffer(
+                                    bcj.backend,
+                                    snapshot_bytes));
+                    }
+                    GGML_ASSERT(buffer != nullptr);
+                    pairfold_buffer = buffer.get();
+                    pairfold_base = (char *)
+                            ggml_backend_buffer_get_base(
+                                pairfold_buffer);
+                }
                 for (input_snapshot & snapshot : input_snapshots[j]) {
                     snapshot.persistent = *snapshot.tensor;
                     snapshot.persistent.buffer = snapshot_buffer.get();
                     snapshot.persistent.view_src = nullptr;
                     snapshot.persistent.view_offs = 0;
                     snapshot.persistent.data = base + snapshot.offset;
+                    if (pairfold_active) {
+                        snapshot.pairfold = snapshot.persistent;
+                        snapshot.pairfold.buffer =
+                                pairfold_buffer;
+                        snapshot.pairfold.data =
+                                pairfold_base + snapshot.offset;
+                    }
                     ggml_backend_tensor_copy_async(bcj.backend, bcj.backend,
                             snapshot.tensor, &snapshot.persistent);
                 }
                 ggml_backend_synchronize(bcj.backend);
                 for (input_snapshot & snapshot : input_snapshots[j]) {
-                    snapshot.tensor->data = snapshot.persistent.data;
+                    if (pairfold_active) {
+                        ggml_backend_tensor_copy_async(
+                                bcj.backend, bcj.backend,
+                                &snapshot.persistent,
+                                &snapshot.pairfold);
+                    }
+                    snapshot.tensor->data =
+                            snapshot.persistent.data;
                 }
+                ggml_backend_synchronize(bcj.backend);
                 fprintf(stderr, "AffinityWave: pinned lane %zu inputs=%zu bytes=%.1f MiB\n",
                         j, input_snapshots[j].size(), snapshot_bytes/(1024.0*1024.0));
             }
@@ -3641,6 +3906,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             const int64_t wave_tokens =
                     backend_ctx->backend_configs[0].nodes[cells.front().expert_end]->ne[1];
             const int warmup_passes =
+                    !pairfold_active &&
                     precapture_requested && (!return_output || precapture_output) &&
                     backend_ctx->aw_precaptured_tokens != wave_tokens ? 2 : 0;
             if (return_output && precapture_requested && !precapture_output) {
@@ -3797,6 +4063,1549 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 }
                 return GGML_STATUS_SUCCESS;
             };
+            auto run_pairfold = [&](
+                    ggml_backend_meta_aw_trace_t trace,
+                    uint64_t & copied_bytes) -> ggml_status {
+                const ggml_backend_meta_pairwave_manifest &
+                        manifest =
+                            ggml_backend_meta_pairwave_get_manifest();
+                std::array<ggml_backend_t, 4> simple_backends{};
+                for (size_t j = 0; j < n_backends; ++j) {
+                    simple_backends[j] =
+                            backend_ctx->backend_configs[j].backend;
+                }
+                const char * serial_env =
+                        getenv("GGML_CUDA_AW_PAIRFOLD_SERIAL");
+                const bool serial =
+                        serial_env != nullptr &&
+                        strcmp(serial_env, "0") != 0;
+                if (serial && strcmp(serial_env, "1") != 0) {
+                    fprintf(stderr,
+                            "AffinityWave: GGML_CUDA_AW_PAIRFOLD_SERIAL must be 1\n");
+                    return GGML_STATUS_FAILED;
+                }
+
+                const int generation =
+                        (int) (backend_ctx->
+                            aw_pairfold_generation_id++ %
+                            0x7fffffff);
+                const ggml_pairfold::schedule schedule =
+                        ggml_pairfold::make_schedule(generation);
+                char callback_error[256] = {};
+                if (backend_ctx->aw_pairfold_generation_fn(
+                            simple_backends.data(), generation, 0,
+                            (int32_t) wave_tokens, callback_error,
+                            sizeof(callback_error)) != 0) {
+                    fprintf(stderr,
+                            "AffinityWave: PairFold generation begin failed: %s\n",
+                            callback_error);
+                    return GGML_STATUS_FAILED;
+                }
+
+                static std::atomic<bool> reported{false};
+                if (!reported.exchange(true)) {
+                    std::string pair_schedule;
+                    pair_schedule.reserve(cells.size());
+                    for (size_t layer = 0;
+                            layer < cells.size(); ++layer) {
+                        pair_schedule.push_back(
+                                (char) ('0' +
+                                    manifest.layers[layer].pair));
+                    }
+                    fprintf(stderr,
+                            "AffinityWave: PairFold active manifest=%s fnv64=%016llx schedule=%s tasks=%d generation=%d scheduler=%s recurrent=pair-gdn attention=literal-exact snapshots=canonical\n",
+                            manifest.path.c_str(),
+                            (unsigned long long) manifest.hash,
+                            pair_schedule.c_str(),
+                            ggml_pairfold::n_tasks, generation,
+                            serial ? "serial" : "pipelined");
+                } else {
+                    fprintf(stderr,
+                            "AffinityWave: PairFold generation=%d scheduler=%s lane-tokens=%lld\n",
+                            generation,
+                            serial ? "serial" : "pipelined",
+                            (long long) wave_tokens);
+                }
+
+                std::array<
+                    std::unordered_set<const ggml_tensor *>,
+                    ggml_pairfold::n_layers> external_roots;
+                for (int layer = 0;
+                        layer < ggml_pairfold::n_layers;
+                        ++layer) {
+                    const ggml_backend_meta_aw_cell & cell =
+                            cells[layer];
+                    for (int i = cell.begin;
+                            i < cell.expert_begin; ++i) {
+                        const ggml_tensor * node =
+                                cgraph->nodes[i];
+                        for (int s = 0; s < GGML_MAX_SRC;
+                                ++s) {
+                            const ggml_tensor * src =
+                                    node->src[s];
+                            while (src != nullptr &&
+                                    src->view_src != nullptr) {
+                                src = src->view_src;
+                            }
+                            if (src != nullptr &&
+                                    src->op == GGML_OP_NONE) {
+                                external_roots[layer].insert(src);
+                            }
+                        }
+                    }
+                }
+
+                enum pairfold_storage {
+                    PAIRFOLD_ORIGINAL,
+                    PAIRFOLD_PERSISTENT,
+                    PAIRFOLD_CANONICAL,
+                };
+                auto mapped_view = [&](
+                        int device, ggml_tensor * tensor,
+                        pairfold_storage storage) {
+                    size_t view_offs = 0;
+                    ggml_tensor * root = tensor;
+                    while (root->view_src != nullptr) {
+                        view_offs += root->view_offs;
+                        root = root->view_src;
+                    }
+                    auto it = std::find_if(
+                            input_snapshots[device].begin(),
+                            input_snapshots[device].end(),
+                            [&](const input_snapshot & snapshot) {
+                        return snapshot.tensor == root;
+                    });
+                    ggml_tensor mapped = *tensor;
+                    if (it == input_snapshots[device].end()) {
+                        return mapped;
+                    }
+                    if (storage == PAIRFOLD_ORIGINAL) {
+                        mapped.buffer = root->buffer;
+                        mapped.data = (char *)
+                                it->original_data + view_offs;
+                    } else if (storage ==
+                            PAIRFOLD_PERSISTENT) {
+                        mapped.buffer =
+                                it->persistent.buffer;
+                        mapped.data = (char *)
+                                it->persistent.data + view_offs;
+                    } else {
+                        mapped.buffer =
+                                it->pairfold.buffer;
+                        mapped.data = (char *)
+                                it->pairfold.data + view_offs;
+                    }
+                    mapped.view_src = nullptr;
+                    mapped.view_offs = 0;
+                    return mapped;
+                };
+
+                std::atomic<uint64_t> copy_bytes{0};
+                auto copy_static = [&](int source,
+                        int destination,
+                        const ggml_tensor & src,
+                        const ggml_tensor & dst) -> ggml_status {
+                    if (!ggml_are_same_layout(&src, &dst)) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold static copy layout mismatch src=%s dst=%s\n",
+                                src.name, dst.name);
+                        return GGML_STATUS_FAILED;
+                    }
+                    const size_t bytes = ggml_nbytes(&dst);
+                    if (bytes == 0) {
+                        return GGML_STATUS_SUCCESS;
+                    }
+                    char error[256] = {};
+                    if (backend_ctx->aw_pairfold_copy(
+                                simple_backends.data(),
+                                source, destination, src.data,
+                                dst.data, bytes,
+                                error, sizeof(error)) != 0) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold static copy failed src-gpu=%d dst-gpu=%d src=%s dst=%s bytes=%zu src-data=%p dst-data=%p: %s\n",
+                                source, destination, src.name,
+                                dst.name, bytes, src.data,
+                                dst.data, error);
+                        return GGML_STATUS_FAILED;
+                    }
+                    copy_bytes.fetch_add(bytes);
+                    return GGML_STATUS_SUCCESS;
+                };
+                auto copy_dynamic = [&](int source,
+                        int destination,
+                        const ggml_tensor & src,
+                        const ggml_tensor & dst) -> ggml_status {
+                    if (!ggml_are_same_layout(&src, &dst)) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold dynamic copy layout mismatch src=%s dst=%s\n",
+                                src.name, dst.name);
+                        return GGML_STATUS_FAILED;
+                    }
+                    if (source == destination) {
+                        return copy_static(source, destination,
+                                src, dst);
+                    }
+                    if (backend_ctx->aw_corridor_copy(
+                                simple_backends[source],
+                                simple_backends[destination],
+                                &src,
+                                const_cast<ggml_tensor *>(&dst)) != 0 ||
+                            backend_ctx->aw_corridor_wait(
+                                simple_backends[source],
+                                simple_backends[destination]) != 0) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold dynamic copy failed src=%d dst=%d\n",
+                                source, destination);
+                        return GGML_STATUS_FAILED;
+                    }
+                    copy_bytes.fetch_add(ggml_nbytes(&dst));
+                    return GGML_STATUS_SUCCESS;
+                };
+
+                auto devices_for = [&](int layer, int panel) {
+                    const auto & placement =
+                            manifest.layers[layer];
+                    const int flip = placement.flips[panel];
+                    return std::array<int, 2>{{
+                        placement.pair*2 + flip,
+                        placement.pair*2 + 1 - flip,
+                    }};
+                };
+                auto logical_for = [](int panel) {
+                    return std::array<int, 2>{{
+                        panel*2, panel*2 + 1,
+                    }};
+                };
+                auto append_range = [](ggml_cgraph * graph,
+                        const ggml_backend_meta_context::
+                            backend_config & config,
+                        int begin, int end, int skip) {
+                    for (int i = begin; i < end; ++i) {
+                        if (i != skip) {
+                            graph->nodes[graph->n_nodes++] =
+                                    config.nodes[i];
+                        }
+                    }
+                };
+                auto reset_graph = [&](int device) {
+                    ggml_cgraph * graph =
+                            backend_ctx->backend_configs[device].
+                                cgraphs[0].cgraph_main;
+                    graph->n_nodes = 0;
+                    return graph;
+                };
+                auto submit_device = [&](int device,
+                        const char * stage, int layer,
+                        int panel) -> ggml_status {
+                    char range_name[128];
+                    snprintf(range_name, sizeof(range_name),
+                            "pairfold/gen=%d/layer=%02d/panel=%d/pair=%d/gpu=%d/stage=%s",
+                            generation, layer, panel,
+                            manifest.layers[layer].pair,
+                            device, stage);
+                    ggml_backend_meta_aw_trace_scope scope(
+                            trace, range_name, 14,
+                            ((uint64_t) generation << 40) |
+                            ((uint64_t) layer << 16) |
+                            ((uint64_t) panel << 8) |
+                            (uint64_t) device);
+                    auto & config =
+                            backend_ctx->backend_configs[device];
+                    const ggml_status status =
+                            ggml_backend_graph_compute_async(
+                            config.backend,
+                            config.cgraphs[0].cgraph_main);
+                    if (status == GGML_STATUS_SUCCESS) {
+                        ggml_backend_meta_affinity_wave_stream_fence(
+                                config.backend, false);
+                    }
+                    return status;
+                };
+                auto submit_pair = [&](const std::array<int, 2> & devices,
+                        const char * stage, int layer,
+                        int panel) -> ggml_status {
+                    ggml_status status = submit_device(
+                            devices[0], stage, layer, panel);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    return submit_device(
+                            devices[1], stage, layer, panel);
+                };
+                const char * audit_layer_env =
+                        getenv(
+                            "GGML_CUDA_AW_PAIRFOLD_AUDIT_LAYER");
+                const int audit_layer =
+                        audit_layer_env != nullptr ?
+                            atoi(audit_layer_env) : -1;
+                auto audit_tensor = [&](const char * stage,
+                        int layer, int panel, int device,
+                        const ggml_tensor * tensor) {
+                    if (layer != audit_layer ||
+                            tensor == nullptr) {
+                        return;
+                    }
+                    ggml_backend_synchronize(
+                            simple_backends[device]);
+                    if (tensor->type != GGML_TYPE_F32) {
+                        const size_t bytes =
+                                ggml_nbytes(tensor);
+                        std::vector<uint8_t> values(bytes);
+                        ggml_backend_tensor_get(tensor,
+                                values.data(), 0, bytes);
+                        size_t nonzero = 0;
+                        uint64_t hash =
+                                UINT64_C(
+                                    1469598103934665603);
+                        for (uint8_t value : values) {
+                            nonzero += value != 0;
+                            hash ^= value;
+                            hash *= UINT64_C(
+                                    1099511628211);
+                        }
+                        fprintf(stderr,
+                                "AffinityWave: PairFold audit layer=%d panel=%d gpu=%d stage=%s tensor=%s type=%s bytes=%zu nonzero=%zu fnv64=%016llx\n",
+                                layer, panel, device,
+                                stage, tensor->name,
+                                ggml_type_name(tensor->type),
+                                bytes, nonzero,
+                                (unsigned long long) hash);
+                        return;
+                    }
+                    const size_t count =
+                            ggml_nelements(tensor);
+                    std::vector<float> values(count);
+                    ggml_backend_tensor_get(tensor,
+                            values.data(), 0,
+                            count*sizeof(float));
+                    size_t nonfinite = 0;
+                    float max_abs = 0.0f;
+                    uint64_t hash =
+                            UINT64_C(1469598103934665603);
+                    for (float value : values) {
+                        uint32_t bits = 0;
+                        memcpy(&bits, &value,
+                                sizeof(bits));
+                        hash ^= bits;
+                        hash *= UINT64_C(
+                                1099511628211);
+                        if (!std::isfinite(value)) {
+                            ++nonfinite;
+                        } else {
+                            max_abs = std::max(
+                                    max_abs,
+                                    std::abs(value));
+                        }
+                    }
+                    fprintf(stderr,
+                            "AffinityWave: PairFold audit layer=%d panel=%d gpu=%d stage=%s tensor=%s count=%zu nonfinite=%zu max-abs=%.8g fnv64=%016llx\n",
+                            layer, panel, device, stage,
+                            tensor->name, count, nonfinite,
+                            max_abs,
+                            (unsigned long long) hash);
+                };
+                auto audit_pair = [&](const char * stage,
+                        const ggml_pairfold::task & task,
+                        const std::array<int, 2> & devices,
+                        const std::array<
+                            ggml_tensor *, 2> & tensors) {
+                    for (int lane = 0; lane < 2;
+                            ++lane) {
+                        audit_tensor(stage, task.layer,
+                                task.panel, devices[lane],
+                                tensors[lane]);
+                    }
+                };
+
+                auto stage_external = [&](int layer, int panel,
+                        const std::array<int, 2> & devices)
+                        -> ggml_status {
+                    const std::array<int, 2> logical =
+                            logical_for(panel);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        for (const input_snapshot & source :
+                                input_snapshots[logical[lane]]) {
+                            if (source.meta_tensor == nullptr ||
+                                    external_roots[layer].count(
+                                        source.meta_tensor) == 0 ||
+                                    strstr(source.meta_tensor->name,
+                                        "cache_") != nullptr) {
+                                continue;
+                            }
+                            auto destination = std::find_if(
+                                    input_snapshots[
+                                        devices[lane]].begin(),
+                                    input_snapshots[
+                                        devices[lane]].end(),
+                                    [&](const input_snapshot & value) {
+                                return value.meta_tensor ==
+                                        source.meta_tensor;
+                            });
+                            if (destination ==
+                                    input_snapshots[
+                                        devices[lane]].end()) {
+                                fprintf(stderr,
+                                        "AffinityWave: PairFold missing staged input %s on GPU%d\n",
+                                        source.meta_tensor->name,
+                                        devices[lane]);
+                                return GGML_STATUS_FAILED;
+                            }
+                            const ggml_status status =
+                                    copy_static(
+                                        logical[lane],
+                                        devices[lane],
+                                        source.pairfold,
+                                        destination->persistent);
+                            if (status != GGML_STATUS_SUCCESS) {
+                                return status;
+                            }
+                        }
+                    }
+                    return GGML_STATUS_SUCCESS;
+                };
+
+                auto stage_hidden = [&](const ggml_pairfold::task & task,
+                        const std::array<int, 2> & devices)
+                        -> ggml_status {
+                    if (task.layer == 0) {
+                        return GGML_STATUS_SUCCESS;
+                    }
+                    const int previous =
+                            ggml_pairfold::task_index(
+                                task.layer - 1, task.panel);
+                    const std::array<int, 2> source =
+                            devices_for(task.layer - 1,
+                                    task.panel);
+                    ggml_cuda_aw_pairfold_handoff handoff{};
+                    handoff.generation = generation;
+                    handoff.task = previous;
+                    handoff.panel = task.panel;
+                    handoff.tokens = (int32_t) wave_tokens;
+                    for (int lane = 0; lane < 2; ++lane) {
+                        handoff.source[lane] = source[lane];
+                        handoff.destination[lane] =
+                                devices[lane];
+                        handoff.input[lane] = (float *)
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[lane]].
+                                    nodes[cells[
+                                        task.layer - 1].end]->
+                                    data;
+                    }
+                    char error[256] = {};
+                    if (backend_ctx->aw_pairfold_stage(
+                                simple_backends.data(), &handoff,
+                                error, sizeof(error)) != 0) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold hidden stage failed: %s\n",
+                                error);
+                        return GGML_STATUS_FAILED;
+                    }
+                    for (int lane = 0; lane < 2; ++lane) {
+                        audit_tensor("hidden-staged",
+                                task.layer, task.panel,
+                                devices[lane],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[lane]].
+                                    nodes[cells[
+                                        task.layer - 1].end]);
+                    }
+                    copy_bytes.fetch_add(
+                            (uint64_t) 2*wave_tokens*2048*
+                            sizeof(float));
+                    return GGML_STATUS_SUCCESS;
+                };
+
+                auto run_recurrent = [&](const ggml_pairfold::task & task,
+                        const std::array<int, 2> & devices)
+                        -> ggml_status {
+                    const ggml_backend_meta_aw_cell & cell =
+                            cells[task.layer];
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        if (task.layer == audit_layer &&
+                                task.panel == 0) {
+                            const ggml_tensor * qkv =
+                                    config.nodes[
+                                        cell.conv_input - 3];
+                            fprintf(stderr,
+                                    "AffinityWave: PairFold QKV graph gpu=%d node=%d name=%s op=%s flags=0x%x type=%s data=%p ne=%lld,%lld,%lld,%lld nb=%zu,%zu,%zu,%zu src0=%s/%s/%p src1=%s/%s/%p src1-flags=0x%x src1-ne=%lld,%lld,%lld,%lld\n",
+                                    devices[lane],
+                                    cell.conv_input - 3,
+                                    qkv->name,
+                                    ggml_op_name(qkv->op),
+                                    qkv->flags,
+                                    ggml_type_name(qkv->type),
+                                    qkv->data,
+                                    (long long) qkv->ne[0],
+                                    (long long) qkv->ne[1],
+                                    (long long) qkv->ne[2],
+                                    (long long) qkv->ne[3],
+                                    qkv->nb[0], qkv->nb[1],
+                                    qkv->nb[2], qkv->nb[3],
+                                    qkv->src[0]->name,
+                                    ggml_type_name(
+                                        qkv->src[0]->type),
+                                    qkv->src[0]->data,
+                                    qkv->src[1]->name,
+                                    ggml_type_name(
+                                        qkv->src[1]->type),
+                                    qkv->src[1]->data,
+                                    qkv->src[1]->flags,
+                                    (long long)
+                                        qkv->src[1]->ne[0],
+                                    (long long)
+                                        qkv->src[1]->ne[1],
+                                    (long long)
+                                        qkv->src[1]->ne[2],
+                                    (long long)
+                                        qkv->src[1]->ne[3]);
+                        }
+                        ggml_cgraph * graph =
+                                reset_graph(devices[lane]);
+                        std::vector<uint8_t> selected(
+                                (size_t) cell.conv_input, 0);
+                        for (int i = cell.begin;
+                                i < cell.conv_state_clear - 2;
+                                ++i) {
+                            if (i != (task.panel == 0 ? -1 :
+                                    cell.state_clear)) {
+                                selected[i] = 1;
+                            }
+                        }
+                        std::function<void(int)> add_dependencies =
+                                [&](int index) {
+                            if (index < cell.begin ||
+                                    index >= cell.conv_input ||
+                                    selected[index]) {
+                                return;
+                            }
+                            selected[index] = 1;
+                            const ggml_tensor * node =
+                                    config.nodes[index];
+                            for (int source = 0;
+                                    source < GGML_MAX_SRC;
+                                    ++source) {
+                                if (node->src[source] == nullptr) {
+                                    continue;
+                                }
+                                for (int candidate = cell.begin;
+                                        candidate <
+                                            cell.conv_input;
+                                        ++candidate) {
+                                    if (config.nodes[candidate] ==
+                                            node->src[source]) {
+                                        add_dependencies(
+                                                candidate);
+                                        break;
+                                    }
+                                }
+                            }
+                        };
+                        for (int i = cell.conv_input - 3;
+                                i < cell.conv_input; ++i) {
+                            add_dependencies(i);
+                        }
+                        for (int i = cell.begin;
+                                i < cell.conv_input; ++i) {
+                            if (selected[i]) {
+                                graph->nodes[
+                                    graph->n_nodes++] =
+                                        config.nodes[i];
+                            }
+                        }
+                        graph->uid = ggml_graph_next_uid();
+                    }
+                    ggml_status status = submit_pair(devices,
+                            "gdn-local-pre", task.layer,
+                            task.panel);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    audit_pair("gdn-local-pre", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.attn_norm],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.attn_norm],
+                            }});
+                    audit_pair("gdn-qkv-transpose", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.conv_input]->
+                                    src[1],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.conv_input]->
+                                    src[1],
+                            }});
+                    audit_pair("gdn-qkv-matmul", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[
+                                        cell.conv_input - 3],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[
+                                        cell.conv_input - 3],
+                            }});
+                    audit_pair("gdn-qkv-weight", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[
+                                        cell.conv_input - 3]->
+                                    src[0],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[
+                                        cell.conv_input - 3]->
+                                    src[0],
+                            }});
+                    audit_pair("gdn-qkv-input", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[
+                                        cell.conv_input - 3]->
+                                    src[1],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[
+                                        cell.conv_input - 3]->
+                                    src[1],
+                            }});
+
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        if (lane != 0) {
+                            auto & source =
+                                    backend_ctx->backend_configs[
+                                        devices[lane - 1]];
+                            const ggml_tensor src =
+                                    mapped_view(
+                                        devices[lane - 1],
+                                        source.nodes[
+                                            cell.conv_state_update],
+                                        PAIRFOLD_PERSISTENT);
+                            const ggml_tensor dst =
+                                    mapped_view(
+                                        devices[lane],
+                                        config.nodes[
+                                            cell.conv_state_clear],
+                                        PAIRFOLD_PERSISTENT);
+                            status = copy_dynamic(
+                                    devices[lane - 1],
+                                    devices[lane], src, dst);
+                            if (status != GGML_STATUS_SUCCESS) {
+                                return status;
+                            }
+                        }
+                        ggml_cgraph * graph =
+                                reset_graph(devices[lane]);
+                        append_range(graph, config,
+                                cell.conv_state_clear - 2,
+                                cell.conv_state_clear, -1);
+                        if (task.panel == 0 && lane == 0) {
+                            graph->nodes[graph->n_nodes++] =
+                                    config.nodes[
+                                        cell.conv_state_clear];
+                        }
+                        append_range(graph, config,
+                                cell.conv_state_clear + 1,
+                                cell.conv_input - 3, -1);
+                        append_range(graph, config,
+                                cell.conv_input,
+                                cell.conv_state_update + 2,
+                                -1);
+                        graph->uid = ggml_graph_next_uid();
+                        status = submit_device(devices[lane],
+                                "gdn-conv", task.layer,
+                                task.panel);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            return status;
+                        }
+                    }
+                    {
+                        auto & source =
+                                backend_ctx->backend_configs[
+                                    devices[1]];
+                        auto & destination =
+                                backend_ctx->backend_configs[
+                                    devices[0]];
+                        const ggml_tensor src = mapped_view(
+                                devices[1],
+                                source.nodes[
+                                    cell.conv_state_update],
+                                PAIRFOLD_PERSISTENT);
+                        const ggml_tensor dst = mapped_view(
+                                devices[0],
+                                destination.nodes[
+                                    cell.conv_state_clear],
+                                PAIRFOLD_PERSISTENT);
+                        status = copy_dynamic(devices[1],
+                                devices[0], src, dst);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            return status;
+                        }
+                    }
+                    audit_pair("gdn-conv-output", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.conv],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.conv],
+                            }});
+                    audit_pair("gdn-conv-state", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[
+                                        cell.conv_state_update],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[
+                                        cell.conv_state_update],
+                            }});
+
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_cgraph * graph =
+                                reset_graph(devices[lane]);
+                        append_range(graph, config,
+                                cell.conv_state_update + 2,
+                                cell.recurrent,
+                                task.panel == 0 ? -1 :
+                                    cell.state_clear);
+                        graph->uid = ggml_graph_next_uid();
+                    }
+                    status = submit_pair(devices,
+                            "gdn-scalars", task.layer,
+                            task.panel);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    audit_pair("gdn-q", task, devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.q_predelta],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.q_predelta],
+                            }});
+                    audit_pair("gdn-conv-post", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.conv],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.conv],
+                            }});
+                    audit_pair("gdn-state-input", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.recurrent]->
+                                    src[5],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.recurrent]->
+                                    src[5],
+                            }});
+
+                    std::array<
+                        ggml_backend_meta_aw_headfold_gdn_lane,
+                        2> lanes{};
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_tensor * recurrent =
+                                config.nodes[cell.recurrent];
+                        ggml_tensor * state_update =
+                                config.nodes[cell.state_update];
+                        ggml_tensor * q =
+                                config.nodes[cell.q_predelta];
+                        ggml_tensor * k =
+                                config.nodes[cell.k_predelta];
+                        ggml_tensor * v =
+                                config.nodes[cell.v_predelta];
+                        ggml_tensor * gate =
+                                config.nodes[cell.gate];
+                        ggml_tensor * beta =
+                                config.nodes[cell.beta];
+                        if (recurrent->src[5] == nullptr ||
+                                state_update->src[1] == nullptr ||
+                                q->nb[2] != k->nb[2] ||
+                                gate->nb[2] != beta->nb[2] ||
+                                q->nb[2] % sizeof(float) != 0 ||
+                                v->nb[2] % sizeof(float) != 0 ||
+                                gate->nb[2] %
+                                    sizeof(float) != 0) {
+                            fprintf(stderr,
+                                    "AffinityWave: invalid PairFold GDN graph signature layer=%d\n",
+                                    task.layer);
+                            return GGML_STATUS_FAILED;
+                        }
+                        lanes[lane] = {
+                            (int32_t) v->ne[2],
+                            (int32_t)
+                                (q->nb[2]/sizeof(float)),
+                            (int32_t)
+                                (v->nb[2]/sizeof(float)),
+                            (int32_t)
+                                (gate->nb[2]/sizeof(float)),
+                            (const float *) q->data,
+                            (const float *) k->data,
+                            (const float *) v->data,
+                            (const float *) gate->data,
+                            (const float *) beta->data,
+                            (const float *)
+                                recurrent->src[5]->data,
+                            (float *) recurrent->data,
+                            (float *)
+                                state_update->src[1]->data,
+                        };
+                    }
+                    std::array<int32_t, 4> groups{};
+                    int group_index = 0;
+                    for (int owner_slot = 0;
+                            owner_slot < 2; ++owner_slot) {
+                        int count = 0;
+                        for (int group = 0; group < 4;
+                                ++group) {
+                            if (manifest.layers[
+                                        task.layer].owners[group] ==
+                                    devices[owner_slot]) {
+                                groups[group_index++] = group;
+                                ++count;
+                            }
+                        }
+                        if (count != 2) {
+                            fprintf(stderr,
+                                    "AffinityWave: invalid PairFold GDN owner groups layer=%d gpu=%d\n",
+                                    task.layer,
+                                    devices[owner_slot]);
+                            return GGML_STATUS_FAILED;
+                        }
+                    }
+                    char error[256] = {};
+                    if (backend_ctx->aw_pairfold_gdn(
+                                simple_backends.data(),
+                                devices.data(), groups.data(),
+                                lanes.data(), 2, error,
+                                sizeof(error)) != 0) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold GDN failed: %s\n",
+                                error);
+                        return GGML_STATUS_FAILED;
+                    }
+                    audit_pair("gdn-output", task, devices,
+                            {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.recurrent],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.recurrent],
+                            }});
+                    audit_pair("gdn-state-output", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.state_update]->
+                                    src[1],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.state_update]->
+                                    src[1],
+                            }});
+
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_cgraph * graph =
+                                reset_graph(devices[lane]);
+                        append_range(graph, config,
+                                cell.state_update + 1,
+                                cell.expert_begin, -1);
+                        graph->uid = ggml_graph_next_uid();
+                    }
+                    status = submit_pair(devices,
+                            "gdn-local-post", task.layer,
+                            task.panel);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    audit_pair("gdn-local-post", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.attn_residual],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.attn_residual],
+                            }});
+                    return GGML_STATUS_SUCCESS;
+                };
+
+                auto run_attention = [&](const ggml_pairfold::task & task,
+                        const std::array<int, 2> & devices)
+                        -> ggml_status {
+                    const ggml_backend_meta_aw_cell & cell =
+                            cells[task.layer];
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_cgraph * graph =
+                                reset_graph(devices[lane]);
+                        append_range(graph, config, cell.begin,
+                                cell.attention_state_end + 1,
+                                -1);
+                        graph->uid = ggml_graph_next_uid();
+                    }
+                    ggml_status status = submit_pair(devices,
+                            "attention-state", task.layer,
+                            task.panel);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+
+                    std::array<ggml_tensor *, 2> cache_k{};
+                    std::array<ggml_tensor *, 2> cache_v{};
+                    const std::array<int, 2> logical =
+                            logical_for(task.panel);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_tensor * flash =
+                                config.nodes[cell.flash_attn];
+                        const int64_t lane_tokens =
+                                flash->src[0]->ne[1]*
+                                flash->src[0]->ne[2]/
+                                cgraph->nodes[
+                                    cell.flash_attn]->src[0]->ne[2];
+                        if (lane_tokens != wave_tokens) {
+                            fprintf(stderr,
+                                    "AffinityWave: PairFold attention lane size mismatch layer=%d got=%lld expected=%lld\n",
+                                    task.layer,
+                                    (long long) lane_tokens,
+                                    (long long) wave_tokens);
+                            return GGML_STATUS_FAILED;
+                        }
+                        cache_k[lane] =
+                                ggml_backend_meta_aw_view_root(
+                                    flash->src[1]);
+                        cache_v[lane] =
+                                ggml_backend_meta_aw_view_root(
+                                    flash->src[2]);
+                    }
+                    for (int source_lane = 0;
+                            source_lane < 2; ++source_lane) {
+                        const int destination_lane =
+                                1 - source_lane;
+                        ggml_tensor src_k = mapped_view(
+                                devices[source_lane],
+                                cache_k[source_lane],
+                                PAIRFOLD_PERSISTENT);
+                        ggml_tensor dst_k = mapped_view(
+                                devices[destination_lane],
+                                cache_k[destination_lane],
+                                PAIRFOLD_PERSISTENT);
+                        ggml_tensor src_v = mapped_view(
+                                devices[source_lane],
+                                cache_v[source_lane],
+                                PAIRFOLD_PERSISTENT);
+                        ggml_tensor dst_v = mapped_view(
+                                devices[destination_lane],
+                                cache_v[destination_lane],
+                                PAIRFOLD_PERSISTENT);
+                        src_k.ne[1] = wave_tokens;
+                        dst_k.ne[1] = wave_tokens;
+                        src_v.ne[1] = wave_tokens;
+                        dst_v.ne[1] = wave_tokens;
+                        const size_t k_offset =
+                                (size_t) logical[source_lane]*
+                                wave_tokens*src_k.nb[1];
+                        const size_t v_offset =
+                                (size_t) logical[source_lane]*
+                                wave_tokens*src_v.nb[1];
+                        src_k.data = (char *) src_k.data +
+                                k_offset;
+                        dst_k.data = (char *) dst_k.data +
+                                k_offset;
+                        src_v.data = (char *) src_v.data +
+                                v_offset;
+                        dst_v.data = (char *) dst_v.data +
+                                v_offset;
+                        status = copy_dynamic(
+                                devices[source_lane],
+                                devices[destination_lane],
+                                src_k, dst_k);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            return status;
+                        }
+                        status = copy_dynamic(
+                                devices[source_lane],
+                                devices[destination_lane],
+                                src_v, dst_v);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            return status;
+                        }
+                    }
+
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_cgraph * graph =
+                                reset_graph(devices[lane]);
+                        append_range(graph, config,
+                                cell.attention_state_end + 1,
+                                cell.expert_begin, -1);
+                        graph->uid = ggml_graph_next_uid();
+                    }
+                    return submit_pair(devices,
+                            "attention-compute",
+                            task.layer, task.panel);
+                };
+
+                auto run_experts = [&](const ggml_pairfold::task & task,
+                        const std::array<int, 2> & devices)
+                        -> ggml_status {
+                    const ggml_backend_meta_aw_cell & cell =
+                            cells[task.layer];
+                    const std::array<int, 2> logical =
+                            logical_for(task.panel);
+                    std::array<
+                        ggml_backend_meta_aw_live_cell, 2>
+                            live_cells{};
+                    auto route_stride = [](const ggml_tensor * route,
+                            const ggml_tensor * output) {
+                        if (route->ne[0] == 8 &&
+                                route->ne[1] == output->ne[1]) {
+                            return route->nb[1];
+                        }
+                        if (route->ne[0] == 1 &&
+                                route->ne[1] == 8 &&
+                                route->ne[2] == output->ne[1]) {
+                            return route->nb[2];
+                        }
+                        return (size_t) 0;
+                    };
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_tensor * gate = nullptr;
+                        ggml_tensor * weighted = nullptr;
+                        for (int i = cell.expert_begin;
+                                i <= cell.expert_end; ++i) {
+                            ggml_tensor * node =
+                                    config.nodes[i];
+                            if (ggml_backend_meta_aw_name_contains(
+                                        node, "ffn_moe_gate",
+                                        task.layer) &&
+                                    node->op ==
+                                        GGML_OP_MUL_MAT_ID) {
+                                gate = node;
+                            } else if (
+                                    ggml_backend_meta_aw_name_contains(
+                                        node,
+                                        "ffn_moe_weighted",
+                                        task.layer) &&
+                                    node->op == GGML_OP_MUL) {
+                                weighted = node;
+                            }
+                        }
+                        ggml_tensor * output =
+                                config.nodes[cell.expert_end];
+                        if (gate == nullptr ||
+                                weighted == nullptr ||
+                                route_stride(gate->src[2],
+                                    output) == 0 ||
+                                route_stride(weighted->src[1],
+                                    output) == 0) {
+                            fprintf(stderr,
+                                    "AffinityWave: invalid PairFold expert graph layer=%d gpu=%d\n",
+                                    task.layer, devices[lane]);
+                            return GGML_STATUS_FAILED;
+                        }
+                        live_cells[lane] = {
+                            task.layer,
+                            devices[lane],
+                            (int32_t) output->ne[1],
+                            logical[lane],
+                            route_stride(gate->src[2],
+                                output),
+                            route_stride(weighted->src[1],
+                                output),
+                            (const float *)
+                                gate->src[1]->data,
+                            (const int32_t *)
+                                gate->src[2]->data,
+                            (const float *)
+                                weighted->src[1]->data,
+                            (float *) output->data,
+                            nullptr,
+                            nullptr,
+                        };
+                    }
+                    char error[256] = {};
+                    if (backend_ctx->aw_pairfold_service(
+                                simple_backends.data(),
+                                live_cells.data(), 2, error,
+                                sizeof(error)) != 0) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold service failed: %s\n",
+                                error);
+                        return GGML_STATUS_FAILED;
+                    }
+                    for (int lane = 0; lane < 2; ++lane) {
+                        auto & config =
+                                backend_ctx->backend_configs[
+                                    devices[lane]];
+                        ggml_cgraph * graph =
+                                reset_graph(devices[lane]);
+                        append_range(graph, config,
+                                cell.shared_begin,
+                                cell.shared_end + 1, -1);
+                        append_range(graph, config,
+                                cell.post_begin,
+                                cell.end + 1, -1);
+                        graph->uid = ggml_graph_next_uid();
+                    }
+                    const ggml_status status =
+                            submit_pair(devices, "post",
+                                task.layer, task.panel);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    audit_pair("layer-output", task,
+                            devices, {{
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[0]].
+                                    nodes[cell.end],
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[1]].
+                                    nodes[cell.end],
+                            }});
+                    return GGML_STATUS_SUCCESS;
+                };
+
+                auto publish_hidden = [&](const ggml_pairfold::task & task,
+                        const std::array<int, 2> & devices)
+                        -> ggml_status {
+                    ggml_cuda_aw_pairfold_handoff handoff{};
+                    handoff.generation = generation;
+                    handoff.task =
+                            ggml_pairfold::task_index(
+                                task.layer, task.panel);
+                    handoff.panel = task.panel;
+                    handoff.tokens = (int32_t) wave_tokens;
+                    std::array<int, 2> destination{{-1, -1}};
+                    if (task.layer + 1 <
+                            ggml_pairfold::n_layers) {
+                        destination = devices_for(
+                                task.layer + 1, task.panel);
+                    } else {
+                        destination =
+                                logical_for(task.panel);
+                    }
+                    const ggml_backend_meta_aw_cell & cell =
+                            cells[task.layer];
+                    for (int lane = 0; lane < 2; ++lane) {
+                        handoff.source[lane] = devices[lane];
+                        handoff.destination[lane] =
+                                destination[lane];
+                        handoff.output[lane] = (const float *)
+                                backend_ctx->
+                                    backend_configs[
+                                        devices[lane]].
+                                    nodes[cell.end]->data;
+                    }
+                    char error[256] = {};
+                    if (backend_ctx->aw_pairfold_publish(
+                                simple_backends.data(), &handoff,
+                                error, sizeof(error)) != 0) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold hidden publish failed: %s\n",
+                                error);
+                        return GGML_STATUS_FAILED;
+                    }
+                    copy_bytes.fetch_add(
+                            (uint64_t) 2*wave_tokens*2048*
+                            sizeof(float));
+                    if ((task.layer + 1 <
+                                ggml_pairfold::n_layers &&
+                            manifest.layers[task.layer].pair !=
+                                manifest.layers[
+                                    task.layer + 1].pair) ||
+                            (task.layer + 1 ==
+                                ggml_pairfold::n_layers &&
+                             devices[0]/2 !=
+                                logical_for(task.panel)[0]/2)) {
+                        copy_bytes.fetch_add(
+                                (uint64_t) 2*wave_tokens*2048*
+                                sizeof(float));
+                    }
+                    return GGML_STATUS_SUCCESS;
+                };
+
+                auto execute_task = [&](const ggml_pairfold::task & task)
+                        -> ggml_status {
+                    const std::array<int, 2> devices =
+                            devices_for(task.layer,
+                                    task.panel);
+                    char task_name[112];
+                    snprintf(task_name, sizeof(task_name),
+                            "pairfold/gen=%d/layer=%02d/panel=%d/pair=%d",
+                            generation, task.layer,
+                            task.panel, task.pair);
+                    ggml_backend_meta_aw_trace_scope task_scope(
+                            trace, task_name, 13,
+                            ((uint64_t) generation << 40) |
+                            ((uint64_t) task.layer << 16) |
+                            ((uint64_t) task.panel << 8) |
+                            (uint64_t) task.pair);
+                    ggml_status status = stage_external(
+                            task.layer, task.panel, devices);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    status = stage_hidden(task, devices);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    if (cells[task.layer].recurrent >= 0) {
+                        status = run_recurrent(task, devices);
+                    } else {
+                        status = run_attention(task, devices);
+                    }
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    status = run_experts(task, devices);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    return publish_hidden(task, devices);
+                };
+
+                std::atomic<int> failure{
+                    (int) GGML_STATUS_SUCCESS};
+                if (serial) {
+                    for (int index : schedule.order) {
+                        const ggml_pairfold::task & task =
+                                schedule.tasks[index];
+                        const ggml_status status =
+                                execute_task(task);
+                        if (status != GGML_STATUS_SUCCESS) {
+                            failure.store((int) status);
+                            break;
+                        }
+                        const std::array<int, 2> devices =
+                                devices_for(task.layer,
+                                        task.panel);
+                        ggml_backend_synchronize(
+                                simple_backends[devices[0]]);
+                        ggml_backend_synchronize(
+                                simple_backends[devices[1]]);
+                    }
+                } else {
+                    std::array<bool,
+                        ggml_pairfold::n_tasks> submitted{};
+                    std::mutex mutex;
+                    std::condition_variable condition;
+                    auto pair_worker = [&](int pair) {
+                        char thread_name[32];
+                        snprintf(thread_name,
+                                sizeof(thread_name),
+                                "pairfold/pair%d", pair);
+                        if (trace != nullptr) {
+                            trace(
+                                GGML_BACKEND_META_AW_TRACE_THREAD,
+                                thread_name, 0, 0);
+                        }
+                        for (int index : schedule.order) {
+                            const ggml_pairfold::task & task =
+                                    schedule.tasks[index];
+                            if (task.pair != pair) {
+                                continue;
+                            }
+                            {
+                                std::unique_lock<std::mutex>
+                                        lock(mutex);
+                                condition.wait(lock, [&]() {
+                                    if (failure.load() !=
+                                            (int)
+                                                GGML_STATUS_SUCCESS) {
+                                        return true;
+                                    }
+                                    for (int dep = 0;
+                                            dep < task.n_deps;
+                                            ++dep) {
+                                        if (!submitted[
+                                                task.deps[dep]]) {
+                                            return false;
+                                        }
+                                    }
+                                    return true;
+                                });
+                            }
+                            if (failure.load() !=
+                                    (int)
+                                        GGML_STATUS_SUCCESS) {
+                                break;
+                            }
+                            const ggml_status status =
+                                    execute_task(task);
+                            {
+                                std::lock_guard<std::mutex>
+                                        lock(mutex);
+                                if (status !=
+                                        GGML_STATUS_SUCCESS) {
+                                    failure.store((int) status);
+                                } else {
+                                    submitted[index] = true;
+                                }
+                            }
+                            condition.notify_all();
+                            if (status !=
+                                    GGML_STATUS_SUCCESS) {
+                                break;
+                            }
+                        }
+                    };
+                    std::thread pair0(pair_worker, 0);
+                    std::thread pair1(pair_worker, 1);
+                    pair0.join();
+                    pair1.join();
+                }
+                if (failure.load() !=
+                        (int) GGML_STATUS_SUCCESS) {
+                    return (ggml_status) failure.load();
+                }
+
+                callback_error[0] = '\0';
+                if (backend_ctx->aw_pairfold_generation_fn(
+                            simple_backends.data(), generation, 1,
+                            (int32_t) wave_tokens, callback_error,
+                            sizeof(callback_error)) != 0) {
+                    fprintf(stderr,
+                            "AffinityWave: PairFold generation end failed: %s\n",
+                            callback_error);
+                    return GGML_STATUS_FAILED;
+                }
+                for (int panel = 0; panel < 2; ++panel) {
+                    const int terminal =
+                            ggml_pairfold::task_index(
+                                ggml_pairfold::n_layers - 1,
+                                panel);
+                    const std::array<int, 2> source =
+                            devices_for(
+                                ggml_pairfold::n_layers - 1,
+                                panel);
+                    const std::array<int, 2> logical =
+                            logical_for(panel);
+                    ggml_cuda_aw_pairfold_handoff handoff{};
+                    handoff.generation = generation;
+                    handoff.task = terminal;
+                    handoff.panel = panel;
+                    handoff.tokens = (int32_t) wave_tokens;
+                    for (int lane = 0; lane < 2; ++lane) {
+                        handoff.source[lane] = source[lane];
+                        handoff.destination[lane] =
+                                logical[lane];
+                        handoff.input[lane] = (float *)
+                                backend_ctx->
+                                    backend_configs[
+                                        logical[lane]].
+                                    nodes[cells.back().end]->data;
+                    }
+                    callback_error[0] = '\0';
+                    if (backend_ctx->aw_pairfold_stage(
+                                simple_backends.data(), &handoff,
+                                callback_error,
+                                sizeof(callback_error)) != 0) {
+                        fprintf(stderr,
+                                "AffinityWave: PairFold final restore failed: %s\n",
+                                callback_error);
+                        return GGML_STATUS_FAILED;
+                    }
+                    copy_bytes.fetch_add(
+                            (uint64_t) 2*wave_tokens*2048*
+                            sizeof(float));
+                }
+                for (ggml_backend_t simple :
+                        simple_backends) {
+                    ggml_backend_synchronize(simple);
+                }
+
+                // Cache publication is deferred until both pair queues
+                // drain. Cache tensors are layer-private, so this does
+                // not delay a consumer in the current graph and avoids
+                // touching an active pair's compute stream.
+                for (int layer = 0;
+                        layer < ggml_pairfold::n_layers;
+                        ++layer) {
+                    const ggml_backend_meta_aw_cell & cell =
+                            cells[layer];
+                    const std::array<int, 2> source_devices =
+                            devices_for(layer, 1);
+                    const int source = source_devices[0];
+                    auto & source_config =
+                            backend_ctx->backend_configs[source];
+                    if (cell.recurrent >= 0) {
+                        const ggml_tensor src_conv =
+                                mapped_view(source,
+                                    source_config.nodes[
+                                        cell.conv_state_update],
+                                    PAIRFOLD_PERSISTENT);
+                        const ggml_tensor src_state =
+                                mapped_view(source,
+                                    source_config.nodes[
+                                        cell.state_update]->
+                                        src[1],
+                                    PAIRFOLD_PERSISTENT);
+                        for (int destination = 0;
+                                destination < 4;
+                                ++destination) {
+                            auto & dst_config =
+                                    backend_ctx->
+                                        backend_configs[
+                                            destination];
+                            const ggml_tensor dst_conv =
+                                    mapped_view(destination,
+                                        dst_config.nodes[
+                                            cell.conv_state_clear],
+                                        PAIRFOLD_ORIGINAL);
+                            const ggml_tensor dst_state =
+                                    mapped_view(destination,
+                                        dst_config.nodes[
+                                            cell.state_clear],
+                                        PAIRFOLD_ORIGINAL);
+                            ggml_status status =
+                                    copy_dynamic(source,
+                                        destination,
+                                        src_conv, dst_conv);
+                            if (status !=
+                                    GGML_STATUS_SUCCESS) {
+                                return status;
+                            }
+                            status = copy_dynamic(source,
+                                    destination,
+                                    src_state, dst_state);
+                            if (status !=
+                                    GGML_STATUS_SUCCESS) {
+                                return status;
+                            }
+                        }
+                    } else {
+                        ggml_tensor * source_flash =
+                                source_config.nodes[
+                                    cell.flash_attn];
+                        const ggml_tensor src_k =
+                                mapped_view(source,
+                                    ggml_backend_meta_aw_view_root(
+                                        source_flash->src[1]),
+                                    PAIRFOLD_PERSISTENT);
+                        const ggml_tensor src_v =
+                                mapped_view(source,
+                                    ggml_backend_meta_aw_view_root(
+                                        source_flash->src[2]),
+                                    PAIRFOLD_PERSISTENT);
+                        for (int destination = 0;
+                                destination < 4;
+                                ++destination) {
+                            auto & dst_config =
+                                    backend_ctx->
+                                        backend_configs[
+                                            destination];
+                            ggml_tensor * dst_flash =
+                                    dst_config.nodes[
+                                        cell.flash_attn];
+                            const ggml_tensor dst_k =
+                                    mapped_view(destination,
+                                        ggml_backend_meta_aw_view_root(
+                                            dst_flash->src[1]),
+                                        PAIRFOLD_ORIGINAL);
+                            const ggml_tensor dst_v =
+                                    mapped_view(destination,
+                                        ggml_backend_meta_aw_view_root(
+                                            dst_flash->src[2]),
+                                        PAIRFOLD_ORIGINAL);
+                            ggml_status status =
+                                    copy_dynamic(source,
+                                        destination,
+                                        src_k, dst_k);
+                            if (status !=
+                                    GGML_STATUS_SUCCESS) {
+                                return status;
+                            }
+                            status = copy_dynamic(source,
+                                    destination,
+                                    src_v, dst_v);
+                            if (status !=
+                                    GGML_STATUS_SUCCESS) {
+                                return status;
+                            }
+                        }
+                    }
+                }
+                for (ggml_backend_t simple :
+                        simple_backends) {
+                    ggml_backend_synchronize(simple);
+                }
+                copied_bytes = copy_bytes.load();
+                return GGML_STATUS_SUCCESS;
+            };
             if (warmup_passes != 0) {
                 fprintf(stderr, "AffinityWave: pre-capturing exact cell graphs with %d untimed wave passes\n",
                         warmup_passes);
@@ -3820,6 +5629,20 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         1, (uint64_t) wave_tokens);
                 const int64_t pass_begin_us = ggml_time_us();
                 uint64_t pass_corridor_bytes = 0;
+                if (pairfold_active) {
+                    const ggml_status status =
+                            run_pairfold(
+                                trace, pass_corridor_bytes);
+                    if (status != GGML_STATUS_SUCCESS) {
+                        return status;
+                    }
+                    elapsed_ms =
+                            (ggml_time_us() -
+                                pass_begin_us)/1000.0;
+                    corridor_bytes =
+                            pass_corridor_bytes;
+                    continue;
+                }
                 if (headfold) {
                     std::vector<ggml_backend_t> simple_backends(
                             n_backends);

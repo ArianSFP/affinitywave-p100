@@ -85,6 +85,17 @@ struct ggml_cuda_aw_headfold_gdn_lane {
     float *       state_output;
 };
 
+struct ggml_cuda_aw_pairfold_handoff {
+    int32_t       generation;
+    int32_t       task;
+    int32_t       panel;
+    int32_t       tokens;
+    int32_t       source[2];
+    int32_t       destination[2];
+    const float * output[2];
+    float *       input[2];
+};
+
 // Validate the four opt-in environment controls and the placement manifest.
 // When the mode is disabled this is a no-op.  Invalid explicit configurations
 // abort at backend initialization rather than silently selecting another path.
@@ -129,6 +140,22 @@ int ggml_cuda_affinity_wave_headfold_gdn(
         void * const * streams,
         const ggml_cuda_aw_headfold_gdn_lane * lanes,
         int32_t n_lanes,
+        char * error,
+        size_t error_capacity);
+
+int ggml_cuda_affinity_wave_pairfold_gdn(
+        void * const * streams,
+        const int32_t * devices,
+        const int32_t * groups,
+        const ggml_cuda_aw_headfold_gdn_lane * lanes,
+        int32_t n_lanes,
+        char * error,
+        size_t error_capacity);
+
+int ggml_cuda_affinity_wave_pairfold_service(
+        void * const * streams,
+        const ggml_cuda_aw_live_cell * cells,
+        int32_t n_cells,
         char * error,
         size_t error_capacity);
 

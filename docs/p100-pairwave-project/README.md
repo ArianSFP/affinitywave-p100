@@ -4,11 +4,14 @@ This directory is the handoff record for the AffinityWave, PairWave,
 CohortRail, and exact diagonal-prefill experiments performed on four Tesla
 P100 PCIe 16 GB GPUs between 2026-07-22 and 2026-07-26.
 
-The source checkpoint is commit
+The production arithmetic checkpoint is commit
 `36bad6bb3ad4c9b31edc4dae9fb6c3716b95704b`. It is based on
 `ae2b41d682e0c18f5c7277860dd0566244413fcb` and its 15-file source diff has
 SHA-256
 `82d5d9826e31e7f238b9d33fca0483ac08094121d66df38f86e15cfb864c624f`.
+The later PairFold runtime checkpoint is committed with
+[PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md) on documentation base
+`619e7cc7c5425b57ad1f5350d2eaa85feecc4187`.
 
 ## Current status
 
@@ -26,6 +29,12 @@ boundaries and the saved logits are byte-identical between the umbrella OFF
 and ON arms. Both saved-logits files have SHA-256
 `47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5`.
 
+The default-off PairFold runtime is also end-to-end and byte-identical at
+c512. Its accurate warm pp8128 median is 3027.038 ms, or 2685.133 tok/s,
+versus 2788.594 ms / 2914.731 tok/s for its same-build diagonal control.
+PairFold is therefore a measured experimental architecture, but it is not
+production-qualified.
+
 An important naming distinction:
 
 - PairWave is an exact two-GPU-pair placement, loader, and service primitive.
@@ -33,22 +42,26 @@ An important naming distinction:
 - The measured 2912.264 tok/s production result belongs to the exact
   diagonal scheduler using CohortRail. It is not a measured PairWave-only
   scheduler rate.
-- PairFold, StitchRail scheduling, InterferenceWave, and PairCache remain
-  replay-only, paused, rejected, or otherwise not production-qualified.
+- PairFold is the implemented 80-task pair-local scheduler built on
+  PairWave. Its measured warm rate is 2685.133 tok/s.
+- StitchRail scheduling, InterferenceWave, and PairCache remain replay-only,
+  paused, rejected, or otherwise not production-qualified.
 
 Do not quote replay rates as production results.
 
 ## Suggested reading order
 
-1. [RESULTS.md](RESULTS.md) - what is qualified and what is only modeled.
-2. [ARCHITECTURE.md](ARCHITECTURE.md) - data flow, ownership, exactness, and
+1. [PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md) - the implemented
+   pair-local runtime, accurate warm result, prior attempts, and next work.
+2. [RESULTS.md](RESULTS.md) - what is qualified and what is only modeled.
+3. [ARCHITECTURE.md](ARCHITECTURE.md) - data flow, ownership, exactness, and
    component boundaries.
-3. [EXPERIMENT-LEDGER.md](EXPERIMENT-LEDGER.md) - retained, rejected, and
+4. [EXPERIMENT-LEDGER.md](EXPERIMENT-LEDGER.md) - retained, rejected, and
    paused experiments.
-4. [REPRODUCING.md](REPRODUCING.md) - build and qualification procedure.
-5. [ARTIFACTS.md](ARTIFACTS.md) - evidence layout, hashes, and omitted bulky
+5. [REPRODUCING.md](REPRODUCING.md) - build and qualification procedure.
+6. [ARTIFACTS.md](ARTIFACTS.md) - evidence layout, hashes, and omitted bulky
    files.
-6. [../backend/AFFINITY_WAVE.md](../backend/AFFINITY_WAVE.md) - runtime
+7. [../backend/AFFINITY_WAVE.md](../backend/AFFINITY_WAVE.md) - runtime
    controls already shipped with the checkpoint.
 
 The full historical notebooks are preserved as an ASCII-normalized archive:

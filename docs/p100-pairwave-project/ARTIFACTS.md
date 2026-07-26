@@ -16,6 +16,31 @@ The PairWave placement hash is the hash used by the replay and PairCache
 requirements. Recompute all copied evidence hashes after checkout rather
 than relying only on this table.
 
+## PairFold runtime checkpoint
+
+The PairFold checkpoint adds:
+
+- the 80-task scheduler and CPU scheduler test;
+- pair-local CUDA runtime and PairWave service integration;
+- the guarded original-rig benchmark harness;
+- the Nsight SQLite trace analyzer;
+- [PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md);
+- a detailed result record and selected small text evidence under
+  `results/qwen36-35b-moe-pp-20260721/pairfold-20260726/`.
+
+Selected warm evidence hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| PairFold warm pp8128 JSON output | `8f706af95ec73d21833b0653733ec3edae9f990fb3648335ae2e9fc455911b4b` |
+| PairFold warm pp8128 diagnostic log | `7fcd9cbe02f9e4e8234ea1c344081f87a9c184a2d5759655d430120141d33e29` |
+| Diagonal warm pp8128 JSON output | `47579319eab7c6c26d3e6ece1dff28f0383426439c201a2669d50cb153193ef7` |
+| Diagonal warm pp8128 diagnostic log | `6601e656085005e317a0547bbb442042bf16193254d5230e3a26c1c5f22e1717` |
+| Current-binary c512 oracle output | `97d72c6ebf1eca4973956ea1d9b40b63fa335311838f108dac9b69672b193594` |
+
+The PairFold JSON aggregate includes cold sample 0. The qualified warm
+median is computed only from samples 1 through 5.
+
 ## Archive layout
 
 ### `archive/frontier`
@@ -110,6 +135,8 @@ a source repository:
 - Nsight `.nsys-rep` and `.sqlite` traces;
 - per-cell binary service dumps;
 - generated logits binaries;
+- PairFold per-layer and per-stage service dumps;
+- PairFold Nsight `.nsys-rep` and `.sqlite` files;
 - the 675 MB final static archive;
 - 620 MB SASS concatenation;
 - cubins, ptxas objects, and linked CUDA libraries;

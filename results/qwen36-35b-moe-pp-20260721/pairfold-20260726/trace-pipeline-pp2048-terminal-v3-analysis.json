@@ -1,0 +1,69 @@
+{
+  "copy": {
+    "bytes": 8224997856,
+    "exposed_percent_of_copy_union": 22.662,
+    "outside_all_sm_work_ms": 59.299224,
+    "union_ms": 261.663107
+  },
+  "gpu": {
+    "0": {
+      "busy_ms": 625.314074,
+      "busy_percent": 50.143,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 621.739043,
+      "same_gpu_sm_overlap_ms": 0.025952
+    },
+    "1": {
+      "busy_ms": 622.630555,
+      "busy_percent": 49.928,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 624.422562,
+      "same_gpu_sm_overlap_ms": 0.017472
+    },
+    "2": {
+      "busy_ms": 623.528423,
+      "busy_percent": 50.0,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 623.524694,
+      "same_gpu_sm_overlap_ms": 0.019552
+    },
+    "3": {
+      "busy_ms": 630.274811,
+      "busy_percent": 50.541,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 616.778306,
+      "same_gpu_sm_overlap_ms": 0.017887
+    }
+  },
+  "host_task_time_by_active_pair_count_ms": {
+    "0": 0.437343,
+    "1": 684.140802,
+    "2": 454.134658
+  },
+  "kernels": {
+    "pairfold_local_sum_count": 640,
+    "peer_named_count": 0
+  },
+  "pair": {
+    "0": {
+      "busy_ms": 714.022846
+    },
+    "1": {
+      "busy_ms": 720.384482
+    }
+  },
+  "task_count": 80,
+  "time_by_active_gpu_count_ms": {
+    "0": 331.780116,
+    "1": 152.457972,
+    "2": 281.914367,
+    "3": 138.141491,
+    "4": 342.759171
+  },
+  "time_by_active_pair_count_ms": {
+    "0": 331.780116,
+    "1": 396.138674,
+    "2": 519.134327
+  },
+  "window_ms": 1247.053117
+}

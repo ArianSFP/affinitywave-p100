@@ -35,10 +35,10 @@ checkpoint was not end-to-end correct and was parked. The later frontier
 reworked the model around exact logical-owner boundaries, chronological
 lanes, bounded arenas, and explicit dependency replays.
 
-The final retained runtime is still a diagonal wave. It services four
-chronological lanes through a bounded N2048 arena and uses exact
-CohortRail kernels. PairWave components remain in the source as exact
-fallbacks and as a separate two-pair experiment.
+The production-qualified runtime is still a diagonal wave. It services four
+chronological lanes through a bounded N2048 arena and uses exact CohortRail
+kernels. A later default-off PairFold checkpoint completes the separate
+two-pair PairWave experiment end-to-end, but remains slower than production.
 
 ## PairWave
 
@@ -70,12 +70,35 @@ logical tiles can share a device launch only when doing so does not change
 the descriptor identity or arithmetic order.
 
 The lane-exact service passed all 160 c512 service boundaries and the saved
-logits oracle. The whole PairWave scheduler did not receive a production
-rate: its best conservative replay was 2782.101 ms, or 2921.533 tok/s, and
-PairFold remained unimplemented.
+logits oracle. PairFold now implements the complete 80-task pair-local
+recurrent, attention, expert, and hidden-state wavefront. Its accurate warm
+pp8128 median is 3027.038 ms, or 2685.133 tok/s. The earlier 2782.101 ms /
+2921.533 tok/s value remains a replay and is not a runtime result.
 
 See [PAIRWAVE-AUDIT.md](archive/frontier/PAIRWAVE-AUDIT.md) and the
 [lane-exact manifest](evidence/frontier/pairwave-laneexact-v3.manifest).
+The runtime design, exactness, trace, warm benchmark, and remaining gaps are
+in [PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md).
+
+## PairFold runtime
+
+PairFold turns each layer into two chronological panel tasks. The static
+80-task DAG includes panel chronology, per-panel hidden dependencies, one
+serialized resource per physical pair, and the repeated pair-1 boundary
+between layers 19 and 20. Two event-generation banks and two stable F32
+handoff slots per GPU allow the two pairs to overlap without a four-GPU
+barrier for ordinary task completion.
+
+Recurrent layers use pair-local exact two-lane GDN. Attention layers retain
+chronological K/V state and currently use the literal exact two-lane
+control. PairWave expert service joins only the active pair, returns BF16
+owner partials into home-local scratch, and performs the original canonical
+ordered sum.
+
+The runtime is selected by `GGML_CUDA_AW_PAIRFOLD=1`, accepts only the
+qualified c512, pp2048, and pp8128 shapes on four P100 GPUs, and requires
+the exact PairWave manifest and P100 arithmetic selectors. It is
+default-off and not production-qualified.
 
 ## CohortRail
 
@@ -171,7 +194,8 @@ Other measured memory boundaries remain archived:
 
 ## Components that are not production
 
-- PairFold: pair-local recurrent/attention scheduler, replay-only.
+- PairFold: implemented and exact at c512, but warm pp8128 is 2685.133
+  tok/s and therefore remains default-off experimental.
 - StitchRail: tile-ready dispatcher/manifest study, not deployed.
 - InterferenceWave/TileFrontier: positive offline replay, not a runtime.
 - PairCache: predictive exact-weight cache replay, blocked by unresolved

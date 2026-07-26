@@ -4265,6 +4265,181 @@ struct ggml_cuda_aw_corridor_channel {
 
 static ggml_cuda_aw_corridor_channel ggml_cuda_aw_corridors[GGML_CUDA_MAX_DEVICES];
 
+constexpr int GGML_CUDA_AW_PAIRFOLD_GENERATIONS = 2;
+constexpr int GGML_CUDA_AW_PAIRFOLD_TASKS = 80;
+
+struct ggml_cuda_aw_pairfold_device_state {
+    cudaStream_t copy_stream = nullptr;
+    void * hidden[2] = {};
+    size_t hidden_bytes = 0;
+    cudaEvent_t compute_ready
+        [GGML_CUDA_AW_PAIRFOLD_GENERATIONS]
+        [GGML_CUDA_AW_PAIRFOLD_TASKS] = {};
+    cudaEvent_t local_stable
+        [GGML_CUDA_AW_PAIRFOLD_GENERATIONS]
+        [GGML_CUDA_AW_PAIRFOLD_TASKS] = {};
+    cudaEvent_t hidden_ready
+        [GGML_CUDA_AW_PAIRFOLD_GENERATIONS]
+        [GGML_CUDA_AW_PAIRFOLD_TASKS] = {};
+    cudaEvent_t task_done
+        [GGML_CUDA_AW_PAIRFOLD_GENERATIONS]
+        [GGML_CUDA_AW_PAIRFOLD_TASKS] = {};
+    cudaEvent_t slot_consumed
+        [GGML_CUDA_AW_PAIRFOLD_GENERATIONS][2] = {};
+    int slot_reader
+        [GGML_CUDA_AW_PAIRFOLD_GENERATIONS][2] = {};
+    cudaEvent_t terminal
+        [GGML_CUDA_AW_PAIRFOLD_GENERATIONS] = {};
+};
+
+static std::array<ggml_cuda_aw_pairfold_device_state,
+        GGML_CUDA_MAX_DEVICES> ggml_cuda_aw_pairfold_states;
+static std::array<int64_t,
+        GGML_CUDA_AW_PAIRFOLD_GENERATIONS>
+        ggml_cuda_aw_pairfold_bank_generation{{-1, -1}};
+static std::mutex ggml_cuda_aw_pairfold_mutex;
+
+__global__ static void ggml_cuda_aw_pairfold_terminal_marker() {
+}
+
+static int ggml_backend_cuda_aw_pairfold_error(
+        char * error, size_t capacity, const char * message) {
+    if (error != nullptr && capacity != 0) {
+        snprintf(error, capacity, "%s", message);
+    }
+    return 1;
+}
+
+static int ggml_backend_cuda_aw_pairfold_ensure(
+        ggml_backend_t const * backends,
+        int32_t tokens,
+        char * error,
+        size_t error_capacity) {
+    if (backends == nullptr || tokens < 1) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "invalid PairFold allocation request");
+    }
+    int device_count = 0;
+    if (cudaGetDeviceCount(&device_count) != cudaSuccess ||
+            device_count != 4) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "PairFold requires exactly four CUDA devices");
+    }
+    for (int device = 0; device < 4; ++device) {
+        cudaDeviceProp properties{};
+        if (cudaGetDeviceProperties(
+                    &properties, device) != cudaSuccess ||
+                properties.major != 6 ||
+                properties.minor != 0 ||
+                strstr(properties.name, "P100") == nullptr) {
+            return ggml_backend_cuda_aw_pairfold_error(
+                    error, error_capacity,
+                    "PairFold requires four P100 GPUs");
+        }
+    }
+    const size_t bytes =
+            (size_t) tokens*2048*sizeof(float);
+    std::lock_guard<std::mutex> lock(
+            ggml_cuda_aw_pairfold_mutex);
+    for (int device = 0; device < 4; ++device) {
+        if (!ggml_backend_is_cuda(backends[device])) {
+            return ggml_backend_cuda_aw_pairfold_error(
+                    error, error_capacity,
+                    "PairFold requires four CUDA backends");
+        }
+        auto * cuda_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[device]->context;
+        if (cuda_ctx->device != device) {
+            return ggml_backend_cuda_aw_pairfold_error(
+                    error, error_capacity,
+                    "PairFold CUDA backend order mismatch");
+        }
+        ggml_cuda_set_device(device);
+        auto & state =
+                ggml_cuda_aw_pairfold_states[device];
+        if (state.copy_stream == nullptr) {
+            CUDA_CHECK(cudaStreamCreateWithFlags(
+                        &state.copy_stream,
+                        cudaStreamNonBlocking));
+            for (int bank = 0;
+                    bank <
+                        GGML_CUDA_AW_PAIRFOLD_GENERATIONS;
+                    ++bank) {
+                CUDA_CHECK(cudaEventCreateWithFlags(
+                            &state.terminal[bank],
+                            cudaEventDisableTiming));
+                for (int panel = 0; panel < 2; ++panel) {
+                    CUDA_CHECK(cudaEventCreateWithFlags(
+                                &state.slot_consumed[
+                                    bank][panel],
+                                cudaEventDisableTiming));
+                    CUDA_CHECK(cudaEventRecord(
+                                state.slot_consumed[
+                                    bank][panel],
+                                cuda_ctx->stream(device, 0)));
+                    state.slot_reader[bank][panel] = -1;
+                }
+                for (int task = 0;
+                        task <
+                            GGML_CUDA_AW_PAIRFOLD_TASKS;
+                        ++task) {
+                    CUDA_CHECK(cudaEventCreateWithFlags(
+                                &state.compute_ready[
+                                    bank][task],
+                                cudaEventDisableTiming));
+                    CUDA_CHECK(cudaEventCreateWithFlags(
+                                &state.local_stable[
+                                    bank][task],
+                                cudaEventDisableTiming));
+                    CUDA_CHECK(cudaEventCreateWithFlags(
+                                &state.hidden_ready[
+                                    bank][task],
+                                cudaEventDisableTiming));
+                    CUDA_CHECK(cudaEventCreateWithFlags(
+                                &state.task_done[
+                                    bank][task],
+                                cudaEventDisableTiming));
+                }
+            }
+        }
+        if (state.hidden_bytes < bytes) {
+            size_t free_before = 0;
+            size_t total_bytes = 0;
+            const char * memory_env =
+                    getenv("GGML_CUDA_AW_MEMORY");
+            const bool report_memory =
+                    memory_env != nullptr &&
+                    strcmp(memory_env, "0") != 0;
+            if (report_memory) {
+                CUDA_CHECK(cudaMemGetInfo(
+                            &free_before, &total_bytes));
+            }
+            for (void *& hidden : state.hidden) {
+                if (hidden != nullptr) {
+                    CUDA_CHECK(cudaFree(hidden));
+                }
+                CUDA_CHECK(cudaMalloc(&hidden, bytes));
+            }
+            state.hidden_bytes = bytes;
+            if (report_memory) {
+                size_t free_after = 0;
+                CUDA_CHECK(cudaMemGetInfo(
+                            &free_after, &total_bytes));
+                fprintf(stderr,
+                        "AffinityWave: PairFold hidden memory device=%d free-before=%zu free-after=%zu used-after=%zu allocation-delta=%zu slots=2 bytes=%zu\n",
+                        device, free_before, free_after,
+                        total_bytes - free_after,
+                        free_before - free_after,
+                        (size_t) 2*bytes);
+            }
+        }
+    }
+    return 0;
+}
+
 static ggml_cuda_aw_corridor_channel & ggml_backend_cuda_aw_corridor_channel(int device) {
     ggml_cuda_aw_corridor_channel & channel = ggml_cuda_aw_corridors[device];
     if (channel.stream == nullptr) {
@@ -4363,6 +4538,441 @@ static int ggml_backend_cuda_affinity_wave_live_service(
     return 0;
 }
 
+static int ggml_backend_cuda_affinity_wave_pairfold_service(
+        ggml_backend_t const * backends,
+        const ggml_cuda_aw_live_cell * cells,
+        int32_t n_cells,
+        char * error,
+        size_t error_capacity) {
+    if (n_cells != 2 ||
+            cells[0].layer != cells[1].layer) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "PairFold service requires two same-layer cells");
+    }
+    const int pair = cells[0].layer < 20 ?
+            cells[0].layer % 2 :
+            (cells[0].layer + 1) % 2;
+    const int active0 = pair*2;
+    const int active1 = active0 + 1;
+    if ((cells[0].home_device != active0 &&
+         cells[0].home_device != active1) ||
+            (cells[1].home_device != active0 &&
+             cells[1].home_device != active1) ||
+            cells[0].home_device ==
+                cells[1].home_device) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "PairFold service cells are not local to the active pair");
+    }
+    void * streams[4] = {};
+    for (int device = 0; device < 4; ++device) {
+        GGML_ASSERT(ggml_backend_is_cuda(
+                    backends[device]));
+        auto * cuda_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[device]->context;
+        GGML_ASSERT(cuda_ctx->device == device);
+        cudaStream_t stream =
+                cuda_ctx->stream(device, 0);
+        streams[device] = (void *) stream;
+        if (device != active0 && device != active1) {
+            continue;
+        }
+        ggml_cuda_set_device(device);
+        for (int stream_no = 1;
+                stream_no < GGML_CUDA_MAX_STREAMS;
+                ++stream_no) {
+            cudaStream_t concurrent_stream =
+                    cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream == nullptr) {
+                continue;
+            }
+            cudaEvent_t & event =
+                    cuda_ctx->affinity_wave_join_events[
+                        stream_no];
+            if (event == nullptr) {
+                CUDA_CHECK(cudaEventCreateWithFlags(
+                            &event,
+                            cudaEventDisableTiming));
+            }
+            CUDA_CHECK(cudaEventRecord(
+                        event, concurrent_stream));
+            CUDA_CHECK(cudaStreamWaitEvent(
+                        stream, event));
+        }
+        cuda_ctx->curr_stream_no = 0;
+    }
+    const int result =
+            ggml_cuda_affinity_wave_pairfold_service(
+                    streams, cells, n_cells,
+                    error, error_capacity);
+    if (result != 0) {
+        return result;
+    }
+    for (int device : {active0, active1}) {
+        auto * cuda_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[device]->context;
+        ggml_cuda_set_device(device);
+        cudaStream_t stream =
+                cuda_ctx->stream(device, 0);
+        cudaEvent_t & event =
+                cuda_ctx->affinity_wave_join_events[0];
+        if (event == nullptr) {
+            CUDA_CHECK(cudaEventCreateWithFlags(
+                        &event,
+                        cudaEventDisableTiming));
+        }
+        CUDA_CHECK(cudaEventRecord(event, stream));
+        for (int stream_no = 1;
+                stream_no < GGML_CUDA_MAX_STREAMS;
+                ++stream_no) {
+            cudaStream_t concurrent_stream =
+                    cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream != nullptr) {
+                CUDA_CHECK(cudaStreamWaitEvent(
+                            concurrent_stream, event));
+            }
+        }
+    }
+    return 0;
+}
+
+static int ggml_backend_cuda_affinity_wave_pairfold_generation(
+        ggml_backend_t const * backends,
+        int32_t generation,
+        int32_t action,
+        int32_t tokens,
+        char * error,
+        size_t error_capacity) {
+    if (generation < 0 || (action != 0 && action != 1)) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "invalid PairFold generation request");
+    }
+    if (ggml_backend_cuda_aw_pairfold_ensure(
+                backends, tokens, error,
+                error_capacity) != 0) {
+        return 1;
+    }
+    const int bank =
+            generation %
+            GGML_CUDA_AW_PAIRFOLD_GENERATIONS;
+    if (action == 0) {
+        if (ggml_cuda_aw_pairfold_bank_generation[
+                    bank] >= 0) {
+            for (int device = 0; device < 4;
+                    ++device) {
+                auto * cuda_ctx =
+                        (ggml_backend_cuda_context *)
+                            backends[device]->context;
+                ggml_cuda_set_device(device);
+                CUDA_CHECK(cudaStreamWaitEvent(
+                            cuda_ctx->stream(device, 0),
+                            ggml_cuda_aw_pairfold_states[
+                                device].terminal[bank],
+                            0));
+                CUDA_CHECK(cudaStreamWaitEvent(
+                            ggml_cuda_aw_pairfold_states[
+                                device].copy_stream,
+                            ggml_cuda_aw_pairfold_states[
+                                device].terminal[bank],
+                            0));
+            }
+        }
+        ggml_cuda_aw_pairfold_bank_generation[bank] =
+                generation;
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            fprintf(stderr,
+                    "AffinityWave: PairFold handoff allocation slots=2 bytes=%zu/GPU task-events=%d generations=%d\n",
+                    (size_t) 2*tokens*2048*
+                        sizeof(float),
+                    GGML_CUDA_AW_PAIRFOLD_TASKS,
+                    GGML_CUDA_AW_PAIRFOLD_GENERATIONS);
+        }
+        return 0;
+    }
+
+    constexpr int terminal_task =
+            GGML_CUDA_AW_PAIRFOLD_TASKS - 1;
+    for (int device = 0; device < 4; ++device) {
+        auto * cuda_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[device]->context;
+        ggml_cuda_set_device(device);
+        cudaStream_t stream =
+                cuda_ctx->stream(device, 0);
+        for (int source = 0; source < 2; ++source) {
+            CUDA_CHECK(cudaStreamWaitEvent(
+                        stream,
+                        ggml_cuda_aw_pairfold_states[
+                            source].hidden_ready[
+                                bank][terminal_task],
+                        0));
+        }
+        const char * trace_env =
+                getenv("GGML_CUDA_AW_TRACE");
+        if (trace_env != nullptr &&
+                strcmp(trace_env, "0") != 0) {
+            ggml_cuda_aw_pairfold_terminal_marker<<<
+                    1, 1, 0, stream>>>();
+            CUDA_CHECK(cudaGetLastError());
+        }
+        CUDA_CHECK(cudaEventRecord(
+                    ggml_cuda_aw_pairfold_states[
+                        device].terminal[bank],
+                    stream));
+    }
+    return 0;
+}
+
+static int ggml_backend_cuda_affinity_wave_pairfold_stage(
+        ggml_backend_t const * backends,
+        const ggml_cuda_aw_pairfold_handoff * handoff,
+        char * error,
+        size_t error_capacity) {
+    if (handoff == nullptr || handoff->generation < 0 ||
+            handoff->task < 0 ||
+            handoff->task >=
+                GGML_CUDA_AW_PAIRFOLD_TASKS ||
+            handoff->panel < 0 ||
+            handoff->panel >= 2 ||
+            handoff->tokens < 1) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "invalid PairFold hidden stage request");
+    }
+    const int bank =
+            handoff->generation %
+            GGML_CUDA_AW_PAIRFOLD_GENERATIONS;
+    const size_t bytes =
+            (size_t) handoff->tokens*2048*
+            sizeof(float);
+    for (int lane = 0; lane < 2; ++lane) {
+        const int source = handoff->source[lane];
+        const int destination =
+                handoff->destination[lane];
+        if (source < 0 || source >= 4 ||
+                destination < 0 || destination >= 4 ||
+                handoff->input[lane] == nullptr) {
+            return ggml_backend_cuda_aw_pairfold_error(
+                    error, error_capacity,
+                    "invalid PairFold hidden stage endpoint");
+        }
+        auto * dst_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[destination]->context;
+        ggml_cuda_set_device(destination);
+        cudaStream_t stream =
+                dst_ctx->stream(destination, 0);
+        CUDA_CHECK(cudaStreamWaitEvent(
+                    stream,
+                    ggml_cuda_aw_pairfold_states[
+                        source].hidden_ready[
+                            bank][handoff->task],
+                    0));
+        if (source/2 == destination/2) {
+            CUDA_CHECK(cudaMemcpyPeerAsync(
+                        handoff->input[lane],
+                        destination,
+                        ggml_cuda_aw_pairfold_states[
+                            source].hidden[
+                                handoff->panel],
+                        source, bytes, stream));
+        } else {
+            CUDA_CHECK(cudaMemcpyAsync(
+                        handoff->input[lane],
+                        ggml_cuda_aw_pairfold_states[
+                            destination].hidden[
+                                handoff->panel],
+                        bytes,
+                        cudaMemcpyDeviceToDevice,
+                        stream));
+        }
+        CUDA_CHECK(cudaEventRecord(
+                    ggml_cuda_aw_pairfold_states[
+                        destination].slot_consumed[
+                            bank][handoff->panel],
+                    stream));
+        const int slot_device =
+                source/2 == destination/2 ?
+                source : destination;
+        {
+            std::lock_guard<std::mutex> lock(
+                    ggml_cuda_aw_pairfold_mutex);
+            ggml_cuda_aw_pairfold_states[
+                slot_device].slot_reader[
+                    bank][handoff->panel] =
+                        destination;
+        }
+    }
+    return 0;
+}
+
+static int ggml_backend_cuda_affinity_wave_pairfold_publish(
+        ggml_backend_t const * backends,
+        const ggml_cuda_aw_pairfold_handoff * handoff,
+        char * error,
+        size_t error_capacity) {
+    if (handoff == nullptr || handoff->generation < 0 ||
+            handoff->task < 0 ||
+            handoff->task >=
+                GGML_CUDA_AW_PAIRFOLD_TASKS ||
+            handoff->panel < 0 ||
+            handoff->panel >= 2 ||
+            handoff->tokens < 1) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "invalid PairFold hidden publish request");
+    }
+    const int bank =
+            handoff->generation %
+            GGML_CUDA_AW_PAIRFOLD_GENERATIONS;
+    const size_t bytes =
+            (size_t) handoff->tokens*2048*
+            sizeof(float);
+    for (int lane = 0; lane < 2; ++lane) {
+        const int source = handoff->source[lane];
+        const int destination =
+                handoff->destination[lane];
+        if (source < 0 || source >= 4 ||
+                handoff->output[lane] == nullptr ||
+                destination < -1 || destination >= 4) {
+            return ggml_backend_cuda_aw_pairfold_error(
+                    error, error_capacity,
+                    "invalid PairFold hidden publish endpoint");
+        }
+        auto * src_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[source]->context;
+        auto & state =
+                ggml_cuda_aw_pairfold_states[source];
+        ggml_cuda_set_device(source);
+        cudaStream_t stream =
+                src_ctx->stream(source, 0);
+        int source_reader = -1;
+        {
+            std::lock_guard<std::mutex> lock(
+                    ggml_cuda_aw_pairfold_mutex);
+            source_reader =
+                    state.slot_reader[
+                        bank][handoff->panel];
+            state.slot_reader[
+                bank][handoff->panel] = -1;
+        }
+        if (source_reader >= 0) {
+            CUDA_CHECK(cudaStreamWaitEvent(
+                        state.copy_stream,
+                        ggml_cuda_aw_pairfold_states[
+                            source_reader].slot_consumed[
+                                bank][handoff->panel],
+                        0));
+        }
+        CUDA_CHECK(cudaEventRecord(
+                    state.compute_ready[
+                        bank][handoff->task],
+                    stream));
+        CUDA_CHECK(cudaStreamWaitEvent(
+                    state.copy_stream,
+                    state.compute_ready[
+                        bank][handoff->task],
+                    0));
+        CUDA_CHECK(cudaMemcpyAsync(
+                    state.hidden[handoff->panel],
+                    handoff->output[lane], bytes,
+                    cudaMemcpyDeviceToDevice,
+                    state.copy_stream));
+        CUDA_CHECK(cudaEventRecord(
+                    state.local_stable[
+                        bank][handoff->task],
+                    state.copy_stream));
+        if (destination >= 0 &&
+                source/2 != destination/2) {
+            int destination_reader = -1;
+            {
+                std::lock_guard<std::mutex> lock(
+                        ggml_cuda_aw_pairfold_mutex);
+                destination_reader =
+                        ggml_cuda_aw_pairfold_states[
+                            destination].slot_reader[
+                                bank][handoff->panel];
+                ggml_cuda_aw_pairfold_states[
+                    destination].slot_reader[
+                        bank][handoff->panel] = -1;
+            }
+            if (destination_reader >= 0) {
+                CUDA_CHECK(cudaStreamWaitEvent(
+                            state.copy_stream,
+                            ggml_cuda_aw_pairfold_states[
+                                destination_reader].
+                                slot_consumed[
+                                    bank][handoff->panel],
+                            0));
+            }
+            CUDA_CHECK(cudaMemcpyPeerAsync(
+                        ggml_cuda_aw_pairfold_states[
+                            destination].hidden[
+                                handoff->panel],
+                        destination,
+                        state.hidden[handoff->panel],
+                        source, bytes,
+                        state.copy_stream));
+        }
+        CUDA_CHECK(cudaEventRecord(
+                    state.hidden_ready[
+                        bank][handoff->task],
+                    state.copy_stream));
+        CUDA_CHECK(cudaStreamWaitEvent(
+                    stream,
+                    state.local_stable[
+                        bank][handoff->task],
+                    0));
+        CUDA_CHECK(cudaEventRecord(
+                    state.task_done[
+                        bank][handoff->task],
+                    stream));
+    }
+    return 0;
+}
+
+static int ggml_backend_cuda_affinity_wave_pairfold_copy(
+        ggml_backend_t const * backends,
+        int32_t source,
+        int32_t destination,
+        const void * source_data,
+        void * destination_data,
+        size_t bytes,
+        char * error,
+        size_t error_capacity) {
+    if (backends == nullptr || source < 0 || source >= 4 ||
+            destination < 0 || destination >= 4 ||
+            source_data == nullptr || destination_data == nullptr ||
+            bytes == 0) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "invalid PairFold tensor copy request");
+    }
+    auto * dst_ctx =
+            (ggml_backend_cuda_context *)
+                backends[destination]->context;
+    ggml_cuda_set_device(destination);
+    cudaStream_t stream =
+            dst_ctx->stream(destination, 0);
+    if (source == destination) {
+        CUDA_CHECK(cudaMemcpyAsync(
+                    destination_data, source_data, bytes,
+                    cudaMemcpyDeviceToDevice, stream));
+    } else {
+        CUDA_CHECK(cudaMemcpyPeerAsync(
+                    destination_data, destination,
+                    source_data, source, bytes, stream));
+    }
+    return 0;
+}
+
 static int ggml_backend_cuda_affinity_wave_r44_prefetch(
         int32_t layer,
         char * error,
@@ -4423,6 +5033,100 @@ static int ggml_backend_cuda_affinity_wave_headfold_gdn(
         CUDA_CHECK(cudaEventRecord(event, stream));
         for (int stream_no = 1;
                 stream_no < GGML_CUDA_MAX_STREAMS; ++stream_no) {
+            cudaStream_t concurrent_stream =
+                    cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream != nullptr) {
+                CUDA_CHECK(cudaStreamWaitEvent(
+                            concurrent_stream, event));
+            }
+        }
+    }
+    return 0;
+}
+
+static int ggml_backend_cuda_affinity_wave_pairfold_gdn(
+        ggml_backend_t const * backends,
+        const int32_t * devices,
+        const int32_t * groups,
+        const ggml_cuda_aw_headfold_gdn_lane * lanes,
+        int32_t n_lanes,
+        char * error,
+        size_t error_capacity) {
+    if (devices == nullptr ||
+            devices[0] < 0 || devices[0] >= 4 ||
+            devices[1] < 0 || devices[1] >= 4 ||
+            devices[0] == devices[1] ||
+            devices[0]/2 != devices[1]/2) {
+        return ggml_backend_cuda_aw_pairfold_error(
+                error, error_capacity,
+                "invalid PairFold GDN active pair");
+    }
+    void * streams[4] = {};
+    for (int device = 0; device < 4; ++device) {
+        GGML_ASSERT(ggml_backend_is_cuda(
+                    backends[device]));
+        auto * cuda_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[device]->context;
+        GGML_ASSERT(cuda_ctx->device == device);
+        streams[device] =
+                (void *) cuda_ctx->stream(device, 0);
+    }
+    for (int device : {devices[0], devices[1]}) {
+        auto * cuda_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[device]->context;
+        ggml_cuda_set_device(device);
+        cudaStream_t stream =
+                cuda_ctx->stream(device, 0);
+        for (int stream_no = 1;
+                stream_no < GGML_CUDA_MAX_STREAMS;
+                ++stream_no) {
+            cudaStream_t concurrent_stream =
+                    cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream == nullptr) {
+                continue;
+            }
+            cudaEvent_t & event =
+                    cuda_ctx->affinity_wave_join_events[
+                        stream_no];
+            if (event == nullptr) {
+                CUDA_CHECK(cudaEventCreateWithFlags(
+                            &event,
+                            cudaEventDisableTiming));
+            }
+            CUDA_CHECK(cudaEventRecord(
+                        event, concurrent_stream));
+            CUDA_CHECK(cudaStreamWaitEvent(
+                        stream, event));
+        }
+        cuda_ctx->curr_stream_no = 0;
+    }
+    const int result =
+            ggml_cuda_affinity_wave_pairfold_gdn(
+                    streams, devices, groups, lanes,
+                    n_lanes, error, error_capacity);
+    if (result != 0) {
+        return result;
+    }
+    for (int device : {devices[0], devices[1]}) {
+        auto * cuda_ctx =
+                (ggml_backend_cuda_context *)
+                    backends[device]->context;
+        ggml_cuda_set_device(device);
+        cudaStream_t stream =
+                cuda_ctx->stream(device, 0);
+        cudaEvent_t & event =
+                cuda_ctx->affinity_wave_join_events[0];
+        if (event == nullptr) {
+            CUDA_CHECK(cudaEventCreateWithFlags(
+                        &event,
+                        cudaEventDisableTiming));
+        }
+        CUDA_CHECK(cudaEventRecord(event, stream));
+        for (int stream_no = 1;
+                stream_no < GGML_CUDA_MAX_STREAMS;
+                ++stream_no) {
             cudaStream_t concurrent_stream =
                     cuda_ctx->streams[device][stream_no];
             if (concurrent_stream != nullptr) {
@@ -7269,11 +7973,29 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_live_service") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_live_service;
     }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_service") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_service;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_generation") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_generation;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_stage") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_stage;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_publish") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_publish;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_copy") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_copy;
+    }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_r44_prefetch") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_r44_prefetch;
     }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_headfold_gdn") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_headfold_gdn;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_gdn") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_gdn;
     }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_trace") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_trace;

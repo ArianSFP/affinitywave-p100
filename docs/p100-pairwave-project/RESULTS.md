@@ -70,6 +70,7 @@ production rate.
 | Path | Result | Evidence class | Status |
 | --- | ---: | --- | --- |
 | Exact diagonal N2048 + CohortRail | 2912.264 tok/s | paired pp8128 runtime, complete exactness | production-qualified, default-off |
+| PairFold two-pair wavefront | 2685.133 tok/s | five-sample warm pp8128 runtime, c512 byte identity | experimental, default-off |
 | PairWave N512, 25% copy | 2921.533 tok/s | calibrated replay | not a runtime rate |
 | PairWave zero-copy/tax bound | 2969.340 tok/s | optimistic replay bound | not attainable evidence |
 | PairCache static R16 | 3108.549 tok/s | untouched-test replay | blocked, not implemented |
@@ -90,7 +91,15 @@ The PairWave one-copy loader and lane-exact service primitive are real:
 
 The published 2912.264 tok/s rate is still not a PairWave-only rate.
 PairWave's full pair-local recurrent/attention scheduler, called PairFold in
-the replays, was not implemented or production-qualified.
+the replays, was implemented later as an exact default-off runtime. Its
+accurate warm pp8128 median is 3027.038 ms / 2685.133 tok/s, versus
+2788.594 ms / 2914.731 tok/s for its same-build diagonal control. The
+PairFold runtime is therefore measured but not production-qualified.
+
+The original fresh-process 4050.309 ms result was cold and must not be used
+as steady-state throughput. Full PairFold architecture, exactness, trace,
+memory, prior experiments, and raw warm samples are documented in
+[PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md).
 
 ## PairCache decision
 
@@ -104,7 +113,7 @@ policy:
 | untouched test | 2614.725 ms | 3108.549 tok/s | 167.376 ms | 86.223 ms |
 
 All windows were positive and descriptor/scheduler invariants passed.
-Runtime work was nevertheless blocked because:
+Runtime work was nevertheless blocked at the time of that replay because:
 
 - PairFold pair-local pre was unmeasured;
 - recurrent/attention transport was not endpoint-modeled;
@@ -114,7 +123,8 @@ Runtime work was nevertheless blocked because:
 
 The authoritative status is
 `replay-blocked-unresolved-model-boundaries`. PairCache is a promising
-hypothesis, not a production rate.
+hypothesis, not a production rate. The later PairFold implementation does
+not retroactively qualify or implement PairCache.
 
 ## Historical performance context
 
