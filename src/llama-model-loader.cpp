@@ -823,6 +823,81 @@ llama_model_loader::llama_model_loader(
     this->use_direct_io = use_direct_io;
     this->check_tensors = check_tensors;
     this->no_alloc = no_alloc;
+
+    const char * host_placement = getenv("GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT");
+    if (host_placement != nullptr && strcmp(host_placement, "0") != 0 &&
+            strcmp(host_placement, "1") != 0) {
+        throw std::runtime_error("GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT must be 0 or 1");
+    }
+    if (host_placement != nullptr && strcmp(host_placement, "1") == 0) {
+        auto require_one = [](const char * name) {
+            const char * value = getenv(name);
+            if (value == nullptr || strcmp(value, "1") != 0) {
+                throw std::runtime_error(format(
+                        "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT requires %s=1", name));
+            }
+        };
+        require_one("GGML_CUDA_AFFINITY_WAVE");
+        require_one("GGML_CUDA_MOE_EP");
+        require_one("GGML_CUDA_MOE_PLAN");
+        require_one("GGML_CUDA_AW_PAIRFOLD");
+        require_one("GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS");
+        require_one("GGML_CUDA_AW_WAVE_OUTPUT");
+        require_one("GGML_CUDA_AW_HEADFOLD");
+        require_one("GGML_CUDA_AW_HEADFOLD_GDN");
+        require_one("GGML_CUDA_AW_HEADFOLD_ATTENTION");
+
+        const char * layout = getenv("GGML_CUDA_AW_Q8_LAYOUT");
+        if (layout == nullptr || strcmp(layout, "t64k32") != 0) {
+            throw std::runtime_error(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT requires GGML_CUDA_AW_Q8_LAYOUT=t64k32");
+        }
+        const char * dense_mode =
+                getenv("GGML_CUDA_AW_WAVE_DENSE_BENCH");
+        if (dense_mode == nullptr ||
+                strcmp(dense_mode, "service") != 0) {
+            throw std::runtime_error(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT requires GGML_CUDA_AW_WAVE_DENSE_BENCH=service");
+        }
+        const char * manifest = getenv("GGML_CUDA_AW_PAIRWAVE_MANIFEST");
+        if (manifest == nullptr || manifest[0] != '/') {
+            throw std::runtime_error(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT requires an absolute GGML_CUDA_AW_PAIRWAVE_MANIFEST");
+        }
+        if (use_mmap) {
+            throw std::runtime_error(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT requires --no-mmap");
+        }
+        if (no_alloc || files.empty()) {
+            throw std::runtime_error(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT requires an allocated GGUF model");
+        }
+        if (llm_kv.arch != LLM_ARCH_QWEN35MOE) {
+            throw std::runtime_error(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT supports only Qwen3.5 MoE models");
+        }
+
+        const char * layers = getenv("GGML_CUDA_AW_PAIRFOLD_HOST_LAYERS");
+        if (layers != nullptr && layers[0] != '\0') {
+            int first = -1;
+            int last = -1;
+            char trailing = '\0';
+            if (sscanf(layers, "%d:%d%c", &first, &last, &trailing) != 2) {
+                throw std::runtime_error(
+                        "GGML_CUDA_AW_PAIRFOLD_HOST_LAYERS must be FIRST:LAST");
+            }
+            pairfold_host_first_layer = first;
+            pairfold_host_last_layer = last;
+        }
+        if (pairfold_host_first_layer < 0 || pairfold_host_last_layer >= 40 ||
+                pairfold_host_first_layer > pairfold_host_last_layer) {
+            throw std::runtime_error(
+                    "PairFold host placement layer range is outside 0:39");
+        }
+        pairfold_host_placement = true;
+        LLAMA_LOG_INFO("%s: PairFold loader host placement enabled for layers %d:%d\n",
+                __func__, pairfold_host_first_layer, pairfold_host_last_layer);
+    }
 }
 
 std::string llama_model_loader::get_arch_name() const {
@@ -1159,8 +1234,49 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
         ggml_backend_buffer_type_t buft = nullptr;
 
+        const bool pairfold_host_layer =
+                pairfold_host_placement &&
+                info.layer == LLM_TENSOR_LAYER_REPEATING &&
+                tn.bid >= pairfold_host_first_layer &&
+                tn.bid <= pairfold_host_last_layer;
+        const bool pairfold_host_projection =
+                tn.tensor == LLM_TENSOR_FFN_GATE_EXPS ||
+                tn.tensor == LLM_TENSOR_FFN_UP_EXPS ||
+                tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS;
+        const bool pairfold_host_weight =
+                pairfold_host_layer && pairfold_host_projection &&
+                tn.suffix != nullptr && strcmp(tn.suffix, "weight") == 0;
+        if (pairfold_host_weight) {
+            const char * projection =
+                    tn.tensor == LLM_TENSOR_FFN_GATE_EXPS ? "ffn_gate_exps" :
+                    tn.tensor == LLM_TENSOR_FFN_UP_EXPS   ? "ffn_up_exps" :
+                                                           "ffn_down_exps";
+            const std::string expected_name =
+                    format("blk.%d.%s.weight", tn.bid, projection);
+            const bool down = tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS;
+            if (tn.str() != expected_name || t_meta->type != GGML_TYPE_Q8_0 ||
+                    t_meta->ne[0] != (down ? 512 : 2048) ||
+                    t_meta->ne[1] != (down ? 2048 : 512) ||
+                    t_meta->ne[2] != 256 || t_meta->ne[3] != 1 ||
+                    !ggml_is_contiguous(t_meta)) {
+                throw std::runtime_error(format(
+                        "PairFold host placement tensor is incompatible: %s", tn.str().c_str()));
+            }
+            if (buft_list->empty()) {
+                throw std::runtime_error(
+                        "PairFold host placement has no layer buffer type");
+            }
+            buft = ggml_backend_meta_pairwave_host_buffer_type(
+                    buft_list->front().first);
+            if (buft == nullptr) {
+                throw std::runtime_error(
+                        "PairFold host placement requires a four-device CUDA Meta buffer");
+            }
+            pairfold_host_placement_tensors++;
+        }
+
         // check overrides
-        if (tensor_buft_overrides) {
+        if (!buft && tensor_buft_overrides) {
             std::string tensor_name = tn.str();
             for (const auto * overrides = tensor_buft_overrides; overrides->pattern != nullptr; ++overrides) {
                 std::regex pattern(overrides->pattern);

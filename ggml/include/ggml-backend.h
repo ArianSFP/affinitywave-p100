@@ -423,6 +423,11 @@ extern "C" {
     GGML_API ggml_backend_dev_t ggml_backend_meta_device(
         ggml_backend_dev_t * devs, size_t n_devs, ggml_backend_meta_get_split_state_t get_split_state, void * get_split_state_ud);
 
+    // Experimental PairWave weight storage. The returned meta buffer type keeps
+    // the normal per-device split while allocating its simple buffers in pinned
+    // host memory.
+    GGML_API ggml_backend_buffer_type_t ggml_backend_meta_pairwave_host_buffer_type(ggml_backend_dev_t dev);
+
     //
     // Utils
     //

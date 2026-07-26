@@ -1,0 +1,103 @@
+AffinityWave: CUDA loaded PairWave manifest /home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/docs/p100-pairwave-project/evidence/frontier/pairwave-laneexact-v3.manifest
+0.01.274.682 W common_fit_params: failed to fit params to free device memory: llama_params_fit is not implemented for SPLIT_MODE_TENSOR, abort
+AffinityWave: loading GGML_CUDA_MOE_EPLB_MAP /home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-primary.eplb
+AffinityWave: loaded GGML_CUDA_MOE_EPLB_MAP layers=40
+AffinityWave: loaded PairWave manifest /home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/docs/p100-pairwave-project/evidence/frontier/pairwave-laneexact-v3.manifest fnv64=033eb5411b1174e6
+0.05.974.435 W AffinityWave: loader tensor blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.0.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU0 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,128
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU1 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,128
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,0
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,0
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+0.06.345.592 W AffinityWave: loader tensor blk.0.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.0.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,128
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,128
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,0
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,0
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+0.06.504.178 W AffinityWave: loader tensor blk.0.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.0.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.06.787.243 W AffinityWave: loader tensor blk.1.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.1.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: GPU2 T64 expert tensors=1 (latest blk.1.ffn_down_exps.weight)
+AffinityWave: GPU3 T64 expert tensors=1 (latest blk.1.ffn_down_exps.weight)
+0.07.510.557 W AffinityWave: loader tensor blk.1.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.1.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.08.110.794 W AffinityWave: loader tensor blk.1.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.1.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.08.782.254 W AffinityWave: loader tensor blk.2.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.2.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+0.09.523.299 W AffinityWave: loader tensor blk.2.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: meta set probe blk.2.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+0.10.125.488 W AffinityWave: loader tensor blk.2.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+0.10.788.520 W AffinityWave: loader tensor blk.3.ffn_down_exps.weight type=q8_0 ne=512,2048,256 buffer=Meta() mmap=0
+0.11.522.481 W AffinityWave: loader tensor blk.3.ffn_gate_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+0.12.137.777 W AffinityWave: loader tensor blk.3.ffn_up_exps.weight type=q8_0 ne=2048,512,256 buffer=Meta() mmap=0
+AffinityWave: GPU2 T64 expert tensors=60 (latest blk.38.ffn_up_exps.weight)
+AffinityWave: GPU3 T64 expert tensors=60 (latest blk.38.ffn_up_exps.weight)
+AffinityWave: GPU0 T64 expert tensors=60 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU1 T64 expert tensors=60 (latest blk.39.ffn_up_exps.weight)
+1.28.670.926 W NCCL init failed (unhandled system error (run with NCCL_DEBUG=INFO for details)); falling back to internal AllReduce
+1.28.670.941 W internal AllReduce init failed (n_devices != 2?); falling back to meta-backend butterfly
+1.28.889.832 I
+1.28.889.932 I system_info: n_threads = 12 (n_threads_batch = 12) / 24 | CUDA : ARCHS = 600 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |
+1.28.890.029 I perplexity: saving all logits to /home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/results/qwen36-35b-moe-pp-20260721/pairfold-20260726/hoststream-final-default-c512-l16-23-v5-logits.bin
+1.28.890.036 I perplexity: tokenizing the input ..
+1.29.917.371 I perplexity: tokenization took 1027.33 ms
+1.29.917.595 I perplexity: calculating perplexity over 1 chunks, n_ctx=512, batch_size=512, n_seq=1
+AffinityWave: pinned lane 0 inputs=7 bytes=1.1 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=1.1 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=1.1 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=1.1 MiB
+AffinityWave: PairFold hidden memory device=0 free-before=5998444544 free-after=5996347392 used-after=11063197696 allocation-delta=2097152 slots=2 bytes=2097152
+AffinityWave: PairFold hidden memory device=1 free-before=6057033728 free-after=6054936576 used-after=11004608512 allocation-delta=2097152 slots=2 bytes=2097152
+AffinityWave: PairFold hidden memory device=2 free-before=5629214720 free-after=5627117568 used-after=11432427520 allocation-delta=2097152 slots=2 bytes=2097152
+AffinityWave: PairFold hidden memory device=3 free-before=5629214720 free-after=5627117568 used-after=11432427520 allocation-delta=2097152 slots=2 bytes=2097152
+AffinityWave: PairFold host weights pinned=1 layers=16:23 host-bytes=6845104128 snapshot-ms=4880.041 device-slots=2 slot-bytes=427819008 bytes/GPU=855638016 prefetch=task-local copy=contiguous h2d=parallel
+AffinityWave: PairFold handoff allocation slots=2 bytes=2097152/GPU task-events=80 generations=2
+AffinityWave: PairFold active manifest=/home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/docs/p100-pairwave-project/evidence/frontier/pairwave-laneexact-v3.manifest fnv64=033eb5411b1174e6 schedule=0101010101010101010110101010101010101010 tasks=80 generation=0 scheduler=pipelined recurrent=pair-gdn attention=literal-exact snapshots=canonical
+AffinityWave: PairFold GDN active tokens=128 segment=32 scratch=0.88 MiB/GPU
+AffinityWave: live service entered cells=2
+AffinityWave: PairWave memory device=0 free-before=5084086272 free-after=5071503360 used-after=11988041728 allocation-delta=12582912 arena=12592128
+AffinityWave: PairWave memory device=1 free-before=5142675456 free-after=5130092544 used-after=11929452544 allocation-delta=12582912 arena=12592128
+AffinityWave: PairWave panel512 bundle=0 ctas=5 arena active0=12592128 active1=12592128 bytes
+AffinityWave: PairWave memory device=2 free-before=4714856448 free-after=4702273536 used-after=12357271552 allocation-delta=12582912 arena=12592128
+AffinityWave: PairWave memory device=3 free-before=4714856448 free-after=4702273536 used-after=12357271552 allocation-delta=12582912 arena=12592128
+AffinityWave: PairFold host generation=0 layer=16 pair=0 h2d-bytes=855638016 h2d-ms=158.998 pair-GiB/s=5.012 gate-up-wait-ms=129.873 down-wait-ms=0.042
+AffinityWave: PairFold host generation=0 layer=17 pair=1 h2d-bytes=855638016 h2d-ms=166.122 pair-GiB/s=4.797 gate-up-wait-ms=0.041 down-wait-ms=0.042
+AffinityWave: PairFold host generation=0 layer=18 pair=0 h2d-bytes=855638016 h2d-ms=164.576 pair-GiB/s=4.842 gate-up-wait-ms=106.491 down-wait-ms=0.042
+AffinityWave: PairFold host generation=0 layer=19 pair=1 h2d-bytes=855638016 h2d-ms=167.309 pair-GiB/s=4.763 gate-up-wait-ms=6.467 down-wait-ms=0.041
+AffinityWave: PairFold host generation=0 layer=20 pair=1 h2d-bytes=855638016 h2d-ms=164.247 pair-GiB/s=4.852 gate-up-wait-ms=112.134 down-wait-ms=0.042
+AffinityWave: PairFold host generation=0 layer=21 pair=0 h2d-bytes=855638016 h2d-ms=168.007 pair-GiB/s=4.743 gate-up-wait-ms=0.041 down-wait-ms=0.042
+AffinityWave: PairFold host generation=0 layer=22 pair=1 h2d-bytes=855638016 h2d-ms=151.317 pair-GiB/s=5.266 gate-up-wait-ms=91.091 down-wait-ms=0.005
+AffinityWave: PairFold host generation=0 layer=23 pair=0 h2d-bytes=855638016 h2d-ms=158.799 pair-GiB/s=5.018 gate-up-wait-ms=0.005 down-wait-ms=0.006
+AffinityWave: PairFold host generation=0 summary layers=8 h2d-bytes=6845104128 serialized-pair-GiB/s=4.906 device-GiB/s=2.372:2.719 gate-up-wait-ms=446.144 down-wait-ms=0.263
+AffinityWave: dense lane mode=service tokens=512 cells=160 corridors=795.7 MiB setup=15.600 ms wave=6150.477 ms tail=12.702 ms total=6178.779 ms throughput=82.9 tok/s; output=logits
+1.37.042.588 I perplexity: 6.96 seconds per pass - ETA 1.37.183.750 I Final estimate: PPL = 4.0783 +/- 0.55814
+1.37.216.021 W ~llama_context:     Meta() compute buffer size of 245.6300 MiB, does not match expectation of 124.3795 MiB

@@ -16,6 +16,12 @@ TAG=${3:-"$MODE-c$TOKENS"}
 DUMP_LAYER=${4:-0}
 OUT="$RESULTS/$TAG"
 REPS=${PAIRFOLD_REPS:-1}
+HOST_WEIGHTS=${PAIRFOLD_HOST_WEIGHTS:-${GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS:-0}}
+HOST_LAYERS=${PAIRFOLD_HOST_LAYERS:-${GGML_CUDA_AW_PAIRFOLD_HOST_LAYERS:-16:23}}
+HOST_PLACEMENT=${PAIRFOLD_HOST_PLACEMENT:-${GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT:-0}}
+HOST_LOOKAHEAD=${PAIRFOLD_HOST_LOOKAHEAD:-${GGML_CUDA_AW_PAIRFOLD_HOST_LOOKAHEAD:-0}}
+HOST_PHASED=${PAIRFOLD_HOST_PHASED:-${GGML_CUDA_AW_PAIRFOLD_HOST_PHASED:-0}}
+HOST_SERIAL_H2D=${PAIRFOLD_HOST_SERIAL_H2D:-${GGML_CUDA_AW_PAIRFOLD_HOST_SERIAL_H2D:-0}}
 
 if [[ ! "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "invalid tag: $TAG" >&2
@@ -29,6 +35,45 @@ if [[ ! "$REPS" =~ ^[1-9][0-9]*$ ]]; then
     echo "PAIRFOLD_REPS must be a positive integer" >&2
     exit 2
 fi
+if [[ "$HOST_WEIGHTS" != 0 && "$HOST_WEIGHTS" != 1 ]]; then
+    echo "PAIRFOLD_HOST_WEIGHTS must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$HOST_PLACEMENT" != 0 && "$HOST_PLACEMENT" != 1 ]]; then
+    echo "PAIRFOLD_HOST_PLACEMENT must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$HOST_PLACEMENT" == 1 && "$HOST_WEIGHTS" != 1 ]]; then
+    echo "PAIRFOLD_HOST_PLACEMENT=1 requires PAIRFOLD_HOST_WEIGHTS=1" >&2
+    exit 2
+fi
+if [[ "$HOST_PLACEMENT" == 1 &&
+      ( "$MODE" == diagonal || "$MODE" == diagonal-dump ) ]]; then
+    echo "PAIRFOLD_HOST_PLACEMENT=1 requires a PairFold mode" >&2
+    exit 2
+fi
+if [[ "$HOST_LOOKAHEAD" != 0 && "$HOST_LOOKAHEAD" != 1 ]]; then
+    echo "PAIRFOLD_HOST_LOOKAHEAD must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$HOST_PHASED" != 0 && "$HOST_PHASED" != 1 ]]; then
+    echo "PAIRFOLD_HOST_PHASED must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "$HOST_SERIAL_H2D" != 0 && "$HOST_SERIAL_H2D" != 1 ]]; then
+    echo "PAIRFOLD_HOST_SERIAL_H2D must be 0 or 1" >&2
+    exit 2
+fi
+if [[ ! "$HOST_LAYERS" =~ ^([0-9]|[1-3][0-9]):([0-9]|[1-3][0-9])$ ]]; then
+    echo "PAIRFOLD_HOST_LAYERS must be FIRST:LAST within 0:39" >&2
+    exit 2
+fi
+HOST_FIRST=${HOST_LAYERS%%:*}
+HOST_LAST=${HOST_LAYERS##*:}
+if (( HOST_FIRST > HOST_LAST )); then
+    echo "PAIRFOLD_HOST_LAYERS must be an ascending range" >&2
+    exit 2
+fi
 
 mkdir -p "$RESULTS"
 exec 9>/tmp/affinitywave-4gpu.lock
@@ -36,7 +81,7 @@ if ! flock -n 9; then
     echo "another four-GPU job holds /tmp/affinitywave-4gpu.lock" >&2
     exit 75
 fi
-if pgrep -f '/bin/llama-(bench|perplexity|cli)( |$)' >/dev/null ||
+if pgrep -f '/bin/llama-(bench|perplexity|cli|completion|server)( |$)' >/dev/null ||
    pgrep -x nsys >/dev/null ||
    pgrep -x ncu >/dev/null; then
     echo "another llama or profiler process is active" >&2
@@ -153,6 +198,12 @@ PAIR_ENV=(
     GGML_CUDA_AW_PAIRWAVE_STATS=0
     GGML_CUDA_AW_PAIRWAVE_M16_CTAS=5
     GGML_CUDA_AW_PAIRFOLD=1
+    GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS="$HOST_WEIGHTS"
+    GGML_CUDA_AW_PAIRFOLD_HOST_LAYERS="$HOST_LAYERS"
+    GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT="$HOST_PLACEMENT"
+    GGML_CUDA_AW_PAIRFOLD_HOST_LOOKAHEAD="$HOST_LOOKAHEAD"
+    GGML_CUDA_AW_PAIRFOLD_HOST_PHASED="$HOST_PHASED"
+    GGML_CUDA_AW_PAIRFOLD_HOST_SERIAL_H2D="$HOST_SERIAL_H2D"
 )
 DIAGONAL_ENV=(
     GGML_CUDA_AW_PAIRFOLD=0

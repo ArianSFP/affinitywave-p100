@@ -387,6 +387,11 @@ static bool ggml_backend_meta_buffer_type_is_host(ggml_backend_buffer_type_t buf
     return true;
 }
 
+static bool ggml_backend_meta_pairwave_host_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
+    GGML_UNUSED(buft);
+    return false;
+}
+
 static const struct ggml_backend_buffer_type_i ggml_backend_meta_buffer_type_iface = {
     /* .get_name         = */ ggml_backend_meta_buffer_type_get_name,
     /* .alloc_buffer     = */ ggml_backend_meta_buffer_type_alloc_buffer,
@@ -396,8 +401,22 @@ static const struct ggml_backend_buffer_type_i ggml_backend_meta_buffer_type_ifa
     /* .is_host          = */ ggml_backend_meta_buffer_type_is_host,
 };
 
+static const struct ggml_backend_buffer_type_i ggml_backend_meta_pairwave_host_buffer_type_iface = {
+    /* .get_name         = */ ggml_backend_meta_buffer_type_get_name,
+    /* .alloc_buffer     = */ ggml_backend_meta_buffer_type_alloc_buffer,
+    /* .get_alignment    = */ ggml_backend_meta_buffer_type_get_alignment,
+    /* .get_max_size     = */ ggml_backend_meta_buffer_type_get_max_size,
+    /* .get_alloc_size   = */ ggml_backend_meta_buffer_type_get_alloc_size,
+    /* .is_host          = */ ggml_backend_meta_pairwave_host_buffer_type_is_host,
+};
+
 bool ggml_backend_buft_is_meta(ggml_backend_buffer_type_t buft) {
     return buft != nullptr && buft->iface.get_name == ggml_backend_meta_buffer_type_iface.get_name;
+}
+
+static bool ggml_backend_buft_is_pairwave_host(ggml_backend_buffer_type_t buft) {
+    return buft != nullptr &&
+            buft->iface.is_host == ggml_backend_meta_pairwave_host_buffer_type_is_host;
 }
 
 static ggml_backend_buffer_type_t ggml_backend_meta_device_get_buffer_type(ggml_backend_dev_t dev) {
@@ -424,6 +443,43 @@ static ggml_backend_buffer_type_t ggml_backend_meta_device_get_buffer_type(ggml_
         /*ctx    =*/ buft_ctx,
     };
     auto result = meta_bufts.emplace(dev, meta_buft);
+    return &result.first->second;
+}
+
+ggml_backend_buffer_type_t ggml_backend_meta_pairwave_host_buffer_type(ggml_backend_dev_t dev) {
+    static std::map<ggml_backend_dev_t, struct ggml_backend_buffer_type> pairwave_host_bufts;
+    if (!ggml_backend_dev_is_meta(dev) || ggml_backend_meta_dev_n_devs(dev) != 4) {
+        return nullptr;
+    }
+    {
+        auto it = pairwave_host_bufts.find(dev);
+        if (it != pairwave_host_bufts.end()) {
+            return &it->second;
+        }
+    }
+
+    std::vector<ggml_backend_buffer_type_t> simple_bufts;
+    simple_bufts.reserve(4);
+    for (size_t i = 0; i < 4; ++i) {
+        ggml_backend_dev_t simple_dev = ggml_backend_meta_dev_simple_dev(dev, i);
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(simple_dev);
+        ggml_backend_buffer_type_t host_buft = ggml_backend_dev_host_buffer_type(simple_dev);
+        if (reg == nullptr || strcmp(ggml_backend_reg_name(reg), "CUDA") != 0 ||
+                host_buft == nullptr || strcmp(ggml_backend_buft_name(host_buft), "CUDA_Host") != 0) {
+            return nullptr;
+        }
+        simple_bufts.push_back(host_buft);
+    }
+
+    ggml_backend_meta_buffer_type_context * buft_ctx =
+            new ggml_backend_meta_buffer_type_context(std::move(simple_bufts));
+    buft_ctx->name = "PairWaveHost" + buft_ctx->name;
+    struct ggml_backend_buffer_type meta_buft = {
+        /*iface  =*/ ggml_backend_meta_pairwave_host_buffer_type_iface,
+        /*device =*/ dev,
+        /*ctx    =*/ buft_ctx,
+    };
+    auto result = pairwave_host_bufts.emplace(dev, meta_buft);
     return &result.first->second;
 }
 
@@ -1860,7 +1916,40 @@ static const std::vector<int32_t> * ggml_backend_meta_eplb_perm(
 
 using ggml_backend_affinity_wave_repack_tensor_t = void (*)(const ggml_tensor * tensor);
 using ggml_backend_affinity_wave_repack_tensor_async_t = void (*)(ggml_backend_t backend, const ggml_tensor * tensor);
+using ggml_backend_affinity_wave_register_host_tensor_t = int (*)(
+        ggml_tensor * tensor,
+        int32_t logical_device,
+        char * error,
+        size_t error_capacity);
 using ggml_backend_affinity_wave_stream_fence_t = void (*)(ggml_backend_t backend, bool broadcast);
+
+static void ggml_backend_meta_affinity_wave_register_host_tensor(
+        ggml_tensor * tensor, int32_t logical_device) {
+    ggml_backend_dev_t dev =
+            ggml_backend_buft_get_device(
+                ggml_backend_buffer_get_type(tensor->buffer));
+    ggml_backend_reg_t reg =
+            dev == nullptr ? nullptr :
+                ggml_backend_dev_backend_reg(dev);
+    auto fn = reg == nullptr ? nullptr :
+            (ggml_backend_affinity_wave_register_host_tensor_t)
+                ggml_backend_reg_get_proc_address(
+                    reg,
+                    "ggml_backend_cuda_affinity_wave_pairfold_register_host_tensor");
+    if (fn == nullptr) {
+        throw std::runtime_error(
+                "PairFold loader host tensor callback is unavailable");
+    }
+    char error[256] = {};
+    if (fn(tensor, logical_device, error, sizeof(error)) != 0) {
+        char message[512];
+        snprintf(message, sizeof(message),
+                "PairFold loader host tensor registration failed for %s on logical GPU%d: %s",
+                tensor->name, logical_device,
+                error[0] != '\0' ? error : "unknown error");
+        throw std::runtime_error(message);
+    }
+}
 
 static void ggml_backend_meta_affinity_wave_repack_tensor(ggml_tensor * tensor) {
     if (getenv("GGML_CUDA_AFFINITY_WAVE") != nullptr && strstr(tensor->name, "exps") != nullptr) {
@@ -2060,6 +2149,10 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
             // [TAG_MOE_EPLB] expert-axis permutation: gather source experts per
             // device slot straight from the loader buffer (no host staging).
             if (split_state.axis == GGML_BACKEND_SPLIT_AXIS_2 && tensor->ne[2] > 1) {
+                const bool pairfold_host_placement =
+                        ggml_backend_buft_is_pairwave_host(
+                            ggml_backend_buffer_get_type(
+                                tensor->buffer));
                 int eplb_axis = -1;
                 const std::vector<int32_t> * perm = ggml_backend_meta_eplb_perm(tensor->name, tensor->ne[2], &eplb_axis);
                 if (perm != nullptr) {
@@ -2074,11 +2167,20 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
                                 (const char *) data + (size_t) (*perm)[slot0 + sl]*exp_bytes,
                                 (size_t) sl*exp_bytes, exp_bytes);
                         }
-                        ggml_backend_meta_affinity_wave_repack_tensor(simple_tensor);
+                        if (pairfold_host_placement) {
+                            ggml_backend_meta_affinity_wave_register_host_tensor(
+                                    simple_tensor, (int32_t) j);
+                        } else {
+                            ggml_backend_meta_affinity_wave_repack_tensor(simple_tensor);
+                        }
                         slot0 += ne2j;
                     }
                     GGML_ASSERT(slot0 == tensor->ne[2]);
                     break;
+                }
+                if (pairfold_host_placement) {
+                    throw std::runtime_error(
+                            "PairFold loader host placement requires the PairWave expert permutation");
                 }
             }
             const int64_t i_start =  offset        /chunk_size_full;
@@ -2333,7 +2435,18 @@ struct ggml_backend_buffer * ggml_backend_meta_alloc_ctx_tensors_from_buft(struc
             }
         }
         if (any_nonzero_slice) {
-            meta_buf_ctx->bufs[i].reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx, simple_buft));
+            ggml_backend_buffer_t simple_buf =
+                    ggml_backend_alloc_ctx_tensors_from_buft(ctx, simple_buft);
+            if (simple_buf == nullptr ||
+                    (ggml_backend_buft_is_pairwave_host(buft) &&
+                     ggml_backend_buffer_get_type(simple_buf) != simple_buft)) {
+                GGML_LOG_ERROR("%s: unable to allocate pinned host buffer %zu for %s\n",
+                        __func__, i, ggml_backend_buft_name(buft));
+                ggml_backend_buffer_free(simple_buf);
+                ggml_backend_buffer_free(meta_buf);
+                return nullptr;
+            }
+            meta_buf_ctx->bufs[i].reset(simple_buf);
         } else {
             meta_buf_ctx->bufs[i].reset(ggml_backend_buft_alloc_buffer(simple_buft, 0));
             for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
@@ -2355,6 +2468,8 @@ struct ggml_backend_meta_aw_live_cell {
     int32_t       home_device;
     int32_t       tokens;
     int32_t       reserved;
+    int32_t       weight_generation;
+    int32_t       weight_slot;
     size_t        ids_stride;
     size_t        weights_stride;
     const float * input;
@@ -2413,6 +2528,14 @@ using ggml_backend_meta_aw_pairfold_generation_t = int (*)(
         int32_t generation,
         int32_t action,
         int32_t tokens,
+        char * error,
+        size_t error_capacity);
+
+using ggml_backend_meta_aw_pairfold_host_weights_prefetch_t = int (*)(
+        int32_t generation,
+        int32_t layer,
+        int32_t panel,
+        int32_t * slot,
         char * error,
         size_t error_capacity);
 
@@ -2588,6 +2711,7 @@ struct ggml_backend_meta_context {
     ggml_backend_meta_aw_headfold_gdn_t         aw_headfold_gdn       = nullptr;
     ggml_backend_meta_aw_pairfold_gdn_t         aw_pairfold_gdn       = nullptr;
     ggml_backend_meta_aw_pairfold_generation_t  aw_pairfold_generation_fn = nullptr;
+    ggml_backend_meta_aw_pairfold_host_weights_prefetch_t aw_pairfold_host_weights_prefetch = nullptr;
     ggml_backend_meta_aw_pairfold_handoff_t     aw_pairfold_stage     = nullptr;
     ggml_backend_meta_aw_pairfold_handoff_t     aw_pairfold_publish   = nullptr;
     ggml_backend_meta_aw_pairfold_copy_t        aw_pairfold_copy      = nullptr;
@@ -2647,6 +2771,9 @@ struct ggml_backend_meta_context {
         aw_pairfold_service = (ggml_backend_meta_aw_live_service_t)
             ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                 ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_service");
+        aw_pairfold_host_weights_prefetch = (ggml_backend_meta_aw_pairfold_host_weights_prefetch_t)
+            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
+                ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_pairfold_host_weights_prefetch");
         aw_r44_prefetch = (ggml_backend_meta_aw_r44_prefetch_t)
             ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(
                 ggml_backend_get_device(simple_backends[0])), "ggml_backend_cuda_affinity_wave_r44_prefetch");
@@ -3077,6 +3204,36 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     GGML_ASSERT(cgraph->grads == nullptr);
     const size_t n_backends = ggml_backend_meta_n_backends(backend);
     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
+
+    const char * pairfold_host_placement =
+            getenv(
+                "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT");
+    if (pairfold_host_placement != nullptr &&
+            strcmp(pairfold_host_placement, "0") != 0) {
+        auto env_is_one = [](const char * name) {
+            const char * value = getenv(name);
+            return value != nullptr &&
+                    strcmp(value, "1") == 0;
+        };
+        const char * dense_mode =
+                getenv(
+                    "GGML_CUDA_AW_WAVE_DENSE_BENCH");
+        if (strcmp(pairfold_host_placement, "1") != 0 ||
+                dense_mode == nullptr ||
+                strcmp(dense_mode, "service") != 0 ||
+                !env_is_one("GGML_CUDA_AW_WAVE_OUTPUT") ||
+                !env_is_one("GGML_CUDA_AW_HEADFOLD") ||
+                !env_is_one("GGML_CUDA_AW_HEADFOLD_GDN") ||
+                !env_is_one(
+                    "GGML_CUDA_AW_HEADFOLD_ATTENTION") ||
+                !env_is_one("GGML_CUDA_AW_PAIRFOLD") ||
+                !env_is_one(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS")) {
+            fprintf(stderr,
+                    "AffinityWave: PairFold host placement rejected before graph execution: exact PairFold service selectors are required\n");
+            return GGML_STATUS_FAILED;
+        }
+    }
 
     // [TAG_META_SUBMIT] engage per-device submission threads only for prefill-sized MoE graphs:
     // decode-sized graphs measured NEGATIVE under a threaded driver (scheduler jitter on tiny
@@ -3635,6 +3792,24 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                  pairfold_lane_tokens == 2032);
         const bool pairfold_active =
                 pairfold_requested && pairfold_shape;
+        const char * pairfold_host_env =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS");
+        const bool pairfold_host_requested =
+                pairfold_host_env != nullptr &&
+                strcmp(pairfold_host_env, "0") != 0;
+        const char * pairfold_host_placement_env =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT");
+        const bool pairfold_host_placement_requested =
+                pairfold_host_placement_env != nullptr &&
+                strcmp(pairfold_host_placement_env, "0") != 0;
+        if (pairfold_host_placement_requested &&
+                !pairfold_active) {
+            fprintf(stderr,
+                    "AffinityWave: PairFold host placement rejected: unsupported, ragged, or non-PairFold graph\n");
+            return GGML_STATUS_FAILED;
+        }
         if (pairfold_requested && !pairfold_active) {
             static std::atomic<bool> reported_pairfold_fallback{false};
             if (!reported_pairfold_fallback.exchange(true)) {
@@ -3656,7 +3831,21 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         pairwave =
                             ggml_backend_meta_pairwave_get_manifest();
                 const char * failure = nullptr;
-                if (strcmp(pairfold_env, "1") != 0) {
+                if (pairfold_host_placement_env != nullptr &&
+                        strcmp(pairfold_host_placement_env, "0") != 0 &&
+                        strcmp(pairfold_host_placement_env, "1") != 0) {
+                    failure =
+                            "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT must be 0 or 1";
+                } else if (pairfold_host_env != nullptr &&
+                        strcmp(pairfold_host_env, "0") != 0 &&
+                        strcmp(pairfold_host_env, "1") != 0) {
+                    failure =
+                            "GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS must be 0 or 1";
+                } else if (pairfold_host_placement_requested &&
+                        !pairfold_host_requested) {
+                    failure =
+                            "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT requires host weights";
+                } else if (strcmp(pairfold_env, "1") != 0) {
                     failure =
                             "GGML_CUDA_AW_PAIRFOLD must be 1";
                 } else if (!live_service || !return_output ||
@@ -3694,6 +3883,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         backend_ctx->aw_pairfold_stage == nullptr ||
                         backend_ctx->aw_pairfold_publish == nullptr ||
                         backend_ctx->aw_pairfold_copy == nullptr ||
+                        (pairfold_host_requested &&
+                         backend_ctx->
+                            aw_pairfold_host_weights_prefetch ==
+                            nullptr) ||
                         backend_ctx->aw_corridor_copy == nullptr ||
                         backend_ctx->aw_corridor_wait == nullptr) {
                     failure =
@@ -5115,7 +5308,8 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 };
 
                 auto run_experts = [&](const ggml_pairfold::task & task,
-                        const std::array<int, 2> & devices)
+                        const std::array<int, 2> & devices,
+                        int weight_slot)
                         -> ggml_status {
                     const ggml_backend_meta_aw_cell & cell =
                             cells[task.layer];
@@ -5180,6 +5374,9 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                             devices[lane],
                             (int32_t) output->ne[1],
                             logical[lane],
+                            weight_slot >= 0 ?
+                                generation : -1,
+                            weight_slot,
                             route_stride(gate->src[2],
                                 output),
                             route_stride(weighted->src[1],
@@ -5314,6 +5511,20 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                             ((uint64_t) task.layer << 16) |
                             ((uint64_t) task.panel << 8) |
                             (uint64_t) task.pair);
+                    int weight_slot = -1;
+                    if (pairfold_host_requested) {
+                        char error[256] = {};
+                        if (backend_ctx->
+                                aw_pairfold_host_weights_prefetch(
+                                    generation, task.layer,
+                                    task.panel, &weight_slot,
+                                    error, sizeof(error)) != 0) {
+                            fprintf(stderr,
+                                    "AffinityWave: PairFold host prefetch failed: %s\n",
+                                    error);
+                            return GGML_STATUS_FAILED;
+                        }
+                    }
                     ggml_status status = stage_external(
                             task.layer, task.panel, devices);
                     if (status != GGML_STATUS_SUCCESS) {
@@ -5331,7 +5542,8 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     if (status != GGML_STATUS_SUCCESS) {
                         return status;
                     }
-                    status = run_experts(task, devices);
+                    status = run_experts(
+                            task, devices, weight_slot);
                     if (status != GGML_STATUS_SUCCESS) {
                         return status;
                     }
@@ -6584,6 +6796,8 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                                 (int32_t) j,
                                 (int32_t) output->ne[1],
                                 0,
+                                -1,
+                                -1,
                                 route_stride(
                                     gate->src[2], output),
                                 route_stride(
@@ -6957,6 +7171,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         };
                         live_cells.push_back({
                                 layer, (int32_t) j, (int32_t) output->ne[1], 0,
+                                -1, -1,
                                 route_stride(gate->src[2]), route_stride(weighted->src[1]),
                                 (const float *) gate->src[1]->data,
                                 (const int32_t *) gate->src[2]->data,

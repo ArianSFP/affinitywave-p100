@@ -6,6 +6,7 @@
 
 #include "affinity-wave.cuh"
 #include "common.cuh"
+#include "ggml-pairfold-scheduler.h"
 
 #include <nvtx3/nvToolsExt.h>
 #include <nvtx3/nvToolsExtCudaRt.h>
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
@@ -161,6 +163,7 @@ struct aw_layout_entry {
 };
 
 static std::vector<aw_layout_entry> aw_layout_entries;
+static std::vector<aw_layout_entry> aw_pairfold_host_layout_entries;
 
 enum aw_projection {
     AW_PROJECTION_GATE        = 0,
@@ -9918,6 +9921,884 @@ static const aw_pairwave_manifest & aw_pairwave_get_manifest() {
     return aw_pairwave_map;
 }
 
+constexpr int AW_PAIRFOLD_HOST_SLOTS = 2;
+constexpr int AW_PAIRFOLD_HOST_GENERATIONS = 2;
+constexpr size_t AW_PAIRFOLD_HOST_EXPERT_BYTES =
+        (size_t) AW_EXPERT_FF*(AW_EMBD/AW_KSTAGE)*
+        AW_Q8_BLOCK_BYTES;
+constexpr size_t AW_PAIRFOLD_HOST_PROJECTION_BYTES =
+        (size_t) 2*AW_PRIMARY_PER_GPU*
+        AW_PAIRFOLD_HOST_EXPERT_BYTES;
+constexpr size_t AW_PAIRFOLD_HOST_LAYER_BYTES =
+        (size_t) 3*AW_PAIRFOLD_HOST_PROJECTION_BYTES;
+
+struct aw_pairfold_host_config {
+    bool enabled = false;
+    bool loader_placement = false;
+    bool lookahead = false;
+    bool phased = false;
+    bool serial_h2d = false;
+    int first_layer = 16;
+    int last_layer = 23;
+};
+
+struct aw_pairfold_host_buffer {
+    void * data = nullptr;
+    size_t bytes = 0;
+
+    void allocate(size_t new_bytes) {
+        if (data != nullptr) {
+            if (bytes != new_bytes) {
+                throw std::runtime_error(
+                        "PairFold host snapshot size changed");
+            }
+            return;
+        }
+        aw_cuda_throw(cudaHostAlloc(
+                    &data, new_bytes, cudaHostAllocPortable),
+                "allocate pinned PairFold host weights");
+        bytes = new_bytes;
+    }
+
+    ~aw_pairfold_host_buffer() {
+        if (data != nullptr) {
+            (void) cudaFreeHost(data);
+        }
+    }
+};
+
+struct aw_pairfold_host_source {
+    std::array<const char *, 3> projections{};
+    std::array<size_t, 3> projection_bytes{};
+    aw_pairfold_host_buffer snapshot;
+    bool loader = false;
+};
+
+struct aw_pairfold_host_slot {
+    aw_device_buffer weights;
+    cudaEvent_t gate_up_ready = nullptr;
+    cudaEvent_t ready = nullptr;
+    cudaEvent_t free = nullptr;
+    int generation = -1;
+    int layer = -1;
+    int released_generation = -1;
+    int released_layer = -1;
+    int released_panel = -1;
+};
+
+struct aw_pairfold_host_record {
+    cudaEvent_t copy_begin = nullptr;
+    cudaEvent_t copy_end = nullptr;
+    cudaEvent_t deadline = nullptr;
+    cudaEvent_t acquired = nullptr;
+    cudaEvent_t down_deadline = nullptr;
+    cudaEvent_t down_acquired = nullptr;
+    int generation = -1;
+    int device = -1;
+    bool waits_recorded = false;
+
+    ~aw_pairfold_host_record() {
+        if (device >= 0) {
+            (void) cudaSetDevice(device);
+        }
+        for (cudaEvent_t event : {
+                copy_begin, copy_end, deadline, acquired,
+                down_deadline, down_acquired}) {
+            if (event != nullptr) {
+                (void) cudaEventDestroy(event);
+            }
+        }
+    }
+};
+
+struct aw_pairfold_host_device {
+    int device = -1;
+    cudaStream_t stream = nullptr;
+    std::array<aw_pairfold_host_slot,
+            AW_PAIRFOLD_HOST_SLOTS> slots;
+
+    ~aw_pairfold_host_device() {
+        if (device >= 0) {
+            (void) cudaSetDevice(device);
+        }
+        for (aw_pairfold_host_slot & slot : slots) {
+            if (slot.gate_up_ready != nullptr) {
+                (void) cudaEventDestroy(
+                        slot.gate_up_ready);
+            }
+            if (slot.ready != nullptr) {
+                (void) cudaEventDestroy(slot.ready);
+            }
+            if (slot.free != nullptr) {
+                (void) cudaEventDestroy(slot.free);
+            }
+        }
+        if (stream != nullptr) {
+            (void) cudaStreamDestroy(stream);
+        }
+    }
+};
+
+static std::once_flag aw_pairfold_host_config_once;
+static std::once_flag aw_pairfold_host_prepare_once;
+static aw_pairfold_host_config aw_pairfold_host_options;
+static std::string aw_pairfold_host_error;
+static std::array<std::array<aw_pairfold_host_source,
+        AW_GPU_COUNT>, AW_LAYERS> aw_pairfold_host_layers;
+static std::array<aw_pairfold_host_device,
+        AW_GPU_COUNT> aw_pairfold_host_devices;
+static std::array<std::array<std::array<
+        aw_pairfold_host_record, AW_GPU_COUNT>,
+        AW_LAYERS>, AW_PAIRFOLD_HOST_GENERATIONS>
+        aw_pairfold_host_records;
+static std::array<int, AW_PAIRFOLD_HOST_GENERATIONS>
+        aw_pairfold_host_reported{{-1, -1}};
+static std::mutex aw_pairfold_host_h2d_mutex;
+static cudaEvent_t aw_pairfold_host_h2d_tail = nullptr;
+static uint64_t aw_pairfold_host_registered_bytes = 0;
+static int aw_pairfold_host_registered_tensors = 0;
+static double aw_pairfold_host_pack_ms = 0.0;
+static std::atomic<bool> aw_pairfold_host_prepare_started{false};
+
+static const aw_pairfold_host_config &
+aw_pairfold_host_get_config() {
+    std::call_once(aw_pairfold_host_config_once, []() {
+        const char * placement =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT");
+        if (placement != nullptr &&
+                strcmp(placement, "0") != 0 &&
+                strcmp(placement, "1") != 0) {
+            aw_pairfold_host_error =
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT must be 0 or 1";
+            return;
+        }
+        aw_pairfold_host_options.loader_placement =
+                placement != nullptr &&
+                strcmp(placement, "1") == 0;
+        const char * enabled =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS");
+        if (enabled == nullptr || strcmp(enabled, "0") == 0) {
+            if (aw_pairfold_host_options.loader_placement) {
+                aw_pairfold_host_error =
+                        "PairFold host placement requires host weights";
+            }
+            return;
+        }
+        if (strcmp(enabled, "1") != 0) {
+            aw_pairfold_host_error =
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS must be 0 or 1";
+            return;
+        }
+        const char * lookahead =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_LOOKAHEAD");
+        if (lookahead != nullptr &&
+                strcmp(lookahead, "0") != 0 &&
+                strcmp(lookahead, "1") != 0) {
+            aw_pairfold_host_error =
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_LOOKAHEAD must be 0 or 1";
+            return;
+        }
+        aw_pairfold_host_options.lookahead =
+                lookahead != nullptr &&
+                strcmp(lookahead, "1") == 0;
+        const char * phased =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PHASED");
+        if (phased != nullptr &&
+                strcmp(phased, "0") != 0 &&
+                strcmp(phased, "1") != 0) {
+            aw_pairfold_host_error =
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_PHASED must be 0 or 1";
+            return;
+        }
+        aw_pairfold_host_options.phased =
+                phased != nullptr &&
+                strcmp(phased, "1") == 0;
+        const char * serial_h2d =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_SERIAL_H2D");
+        if (serial_h2d != nullptr &&
+                strcmp(serial_h2d, "0") != 0 &&
+                strcmp(serial_h2d, "1") != 0) {
+            aw_pairfold_host_error =
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_SERIAL_H2D must be 0 or 1";
+            return;
+        }
+        aw_pairfold_host_options.serial_h2d =
+                serial_h2d != nullptr &&
+                strcmp(serial_h2d, "1") == 0;
+        const char * layers =
+                getenv(
+                    "GGML_CUDA_AW_PAIRFOLD_HOST_LAYERS");
+        if (layers != nullptr && layers[0] != '\0') {
+            int first = -1;
+            int last = -1;
+            char trailing = '\0';
+            if (sscanf(layers, "%d:%d%c",
+                        &first, &last, &trailing) != 2) {
+                aw_pairfold_host_error =
+                        "GGML_CUDA_AW_PAIRFOLD_HOST_LAYERS must be FIRST:LAST";
+                return;
+            }
+            aw_pairfold_host_options.first_layer =
+                    first;
+            aw_pairfold_host_options.last_layer =
+                    last;
+        }
+        if (aw_pairfold_host_options.first_layer < 0 ||
+                aw_pairfold_host_options.last_layer >=
+                    AW_LAYERS ||
+                aw_pairfold_host_options.first_layer >
+                    aw_pairfold_host_options.last_layer) {
+            aw_pairfold_host_error =
+                    "PairFold host layer range is outside 0:39";
+            return;
+        }
+        if (aw_pairfold_host_options.loader_placement &&
+                getenv("GGML_CUDA_NO_PINNED") != nullptr) {
+            aw_pairfold_host_error =
+                    "PairFold host placement requires pinned host buffers";
+            return;
+        }
+        aw_pairfold_host_options.enabled = true;
+    });
+    if (!aw_pairfold_host_error.empty()) {
+        throw std::runtime_error(aw_pairfold_host_error);
+    }
+    return aw_pairfold_host_options;
+}
+
+static bool aw_pairfold_host_layer_selected(int layer) {
+    const aw_pairfold_host_config & config =
+            aw_pairfold_host_get_config();
+    return config.enabled &&
+            layer >= config.first_layer &&
+            layer <= config.last_layer;
+}
+
+static void aw_pairfold_host_create_record(
+        int bank, int layer, int device) {
+    aw_pairfold_host_record & record =
+            aw_pairfold_host_records[bank][layer][device];
+    if (record.copy_begin != nullptr) {
+        return;
+    }
+    aw_cuda_throw(cudaSetDevice(device),
+            "set PairFold host timing device");
+    record.device = device;
+    aw_cuda_throw(cudaEventCreate(&record.copy_begin),
+            "create PairFold host copy-begin event");
+    aw_cuda_throw(cudaEventCreate(&record.copy_end),
+            "create PairFold host copy-end event");
+    aw_cuda_throw(cudaEventCreate(&record.deadline),
+            "create PairFold host deadline event");
+    aw_cuda_throw(cudaEventCreate(&record.acquired),
+            "create PairFold host acquired event");
+    aw_cuda_throw(cudaEventCreate(&record.down_deadline),
+            "create PairFold host down-deadline event");
+    aw_cuda_throw(cudaEventCreate(&record.down_acquired),
+            "create PairFold host down-acquired event");
+}
+
+static void aw_pairfold_host_prepare() {
+    const aw_pairfold_host_config & config =
+            aw_pairfold_host_get_config();
+    if (!config.enabled) {
+        return;
+    }
+    std::call_once(aw_pairfold_host_prepare_once, [&]() {
+        aw_pairfold_host_prepare_started.store(
+                true, std::memory_order_release);
+        try {
+            const aw_pairwave_manifest & manifest =
+                    aw_pairwave_get_manifest();
+            if (!manifest.enabled ||
+                    !aw_env_on(getenv(
+                        "GGML_CUDA_AW_PAIRFOLD"))) {
+                throw std::runtime_error(
+                        "host weights require active PairFold and PairWave");
+            }
+
+            std::array<std::array<std::array<
+                    const char *, 3>, AW_GPU_COUNT>,
+                    AW_LAYERS> sources{};
+            {
+                std::lock_guard<std::mutex> lock(
+                        aw_layout_mutex);
+                const std::vector<aw_layout_entry> & catalog =
+                        config.loader_placement ?
+                        aw_pairfold_host_layout_entries :
+                        aw_layout_entries;
+                for (int layer = config.first_layer;
+                        layer <= config.last_layer; ++layer) {
+                    const int active0 =
+                            manifest.layers[layer].pair*2;
+                    for (int device : {
+                            active0, active0 + 1}) {
+                        for (int projection = 0;
+                                projection < 3;
+                                ++projection) {
+                            const aw_layout_entry * source =
+                                    nullptr;
+                            int matches = 0;
+                            for (const aw_layout_entry & entry :
+                                    catalog) {
+                                if (entry.device != device ||
+                                        entry.layer != layer ||
+                                        entry.projection !=
+                                            projection) {
+                                    continue;
+                                }
+                                ++matches;
+                                source = &entry;
+                            }
+                            const int expected_n =
+                                    projection ==
+                                        AW_PROJECTION_DOWN ?
+                                        AW_EMBD : AW_EXPERT_FF;
+                            const int expected_k =
+                                    projection ==
+                                        AW_PROJECTION_DOWN ?
+                                        AW_EXPERT_FF : AW_EMBD;
+                            if (matches != 1 ||
+                                    source == nullptr ||
+                                    source->data == nullptr ||
+                                    source->bytes !=
+                                        AW_PAIRFOLD_HOST_PROJECTION_BYTES ||
+                                    source->n != expected_n ||
+                                    source->k != expected_k ||
+                                    (!config.loader_placement &&
+                                     aw_t64_tensors.count(
+                                        source->data) == 0)) {
+                                throw std::runtime_error(
+                                        "PairFold host weight catalog is incompatible");
+                            }
+                            if (config.loader_placement) {
+                                const bool resident_duplicate =
+                                        std::any_of(
+                                            aw_layout_entries.begin(),
+                                            aw_layout_entries.end(),
+                                            [&](const aw_layout_entry & entry) {
+                                    return entry.device == device &&
+                                            entry.layer == layer &&
+                                            entry.projection == projection;
+                                });
+                                if (resident_duplicate) {
+                                    throw std::runtime_error(
+                                            "PairFold loader placement retained a selected GPU tensor");
+                                }
+                            }
+                            sources[layer][device][projection] =
+                                    (const char *) source->data;
+                        }
+                    }
+                }
+            }
+            if (config.loader_placement) {
+                const int expected_tensors =
+                        (config.last_layer -
+                         config.first_layer + 1)*2*3;
+                const uint64_t expected_bytes =
+                        (uint64_t)
+                            (config.last_layer -
+                             config.first_layer + 1)*2*
+                            AW_PAIRFOLD_HOST_LAYER_BYTES;
+                if (aw_pairfold_host_registered_tensors !=
+                            expected_tensors ||
+                        aw_pairfold_host_registered_bytes !=
+                            expected_bytes) {
+                    throw std::runtime_error(
+                            "PairFold loader host catalog is incomplete");
+                }
+            }
+
+            std::array<size_t, AW_GPU_COUNT>
+                    free_before_slots{};
+            std::array<size_t, AW_GPU_COUNT>
+                    free_after_slots{};
+            for (int device = 0; device < AW_GPU_COUNT;
+                    ++device) {
+                aw_cuda_throw(cudaSetDevice(device),
+                        "set PairFold host weight device");
+                size_t total_bytes = 0;
+                aw_cuda_throw(cudaMemGetInfo(
+                            &free_before_slots[device],
+                            &total_bytes),
+                        "query PairFold memory before slots");
+                aw_pairfold_host_device & state =
+                        aw_pairfold_host_devices[device];
+                state.device = device;
+                int least_priority = 0;
+                int greatest_priority = 0;
+                aw_cuda_throw(
+                        cudaDeviceGetStreamPriorityRange(
+                            &least_priority,
+                            &greatest_priority),
+                        "query PairFold host stream priority");
+                aw_cuda_throw(cudaStreamCreateWithPriority(
+                            &state.stream,
+                            cudaStreamNonBlocking,
+                            least_priority),
+                        "create PairFold host weight stream");
+                if (ggml_cuda_affinity_wave_trace_enabled()) {
+                    char name[32];
+                    snprintf(name, sizeof(name),
+                            "aw-host-weight/d%d", device);
+                    ggml_cuda_affinity_wave_trace_name_stream(
+                            (void *) state.stream, name);
+                }
+                for (aw_pairfold_host_slot & slot :
+                        state.slots) {
+                    slot.weights.ensure(
+                            AW_PAIRFOLD_HOST_LAYER_BYTES);
+                    aw_cuda_throw(
+                            cudaEventCreateWithFlags(
+                                &slot.gate_up_ready,
+                                cudaEventDisableTiming),
+                            "create PairFold host gate/up event");
+                    aw_cuda_throw(
+                            cudaEventCreateWithFlags(
+                                &slot.ready,
+                                cudaEventDisableTiming),
+                            "create PairFold host ready event");
+                    aw_cuda_throw(
+                            cudaEventCreateWithFlags(
+                                &slot.free,
+                                cudaEventDisableTiming),
+                            "create PairFold host free event");
+                    aw_cuda_throw(cudaEventRecord(
+                                slot.free, state.stream),
+                            "initialize PairFold host free event");
+                }
+                aw_cuda_throw(cudaMemGetInfo(
+                            &free_after_slots[device],
+                            &total_bytes),
+                        "query PairFold memory after slots");
+            }
+
+            const auto snapshot_begin =
+                    std::chrono::steady_clock::now();
+            uint64_t host_bytes = 0;
+            for (int layer = config.first_layer;
+                    layer <= config.last_layer; ++layer) {
+                const int active0 =
+                        manifest.layers[layer].pair*2;
+                for (int device : {active0, active0 + 1}) {
+                    aw_pairfold_host_source & host =
+                            aw_pairfold_host_layers[
+                                layer][device];
+                    host.loader =
+                            config.loader_placement;
+                    if (!config.loader_placement) {
+                        host.snapshot.allocate(
+                                AW_PAIRFOLD_HOST_LAYER_BYTES);
+                        aw_cuda_throw(cudaSetDevice(device),
+                                "set PairFold host snapshot device");
+                    }
+                    for (int projection = 0;
+                            projection < 3; ++projection) {
+                        if (config.loader_placement) {
+                            host.projections[projection] =
+                                    sources[layer][device][
+                                        projection];
+                        } else {
+                            char * snapshot_projection =
+                                    (char *)
+                                        host.snapshot.data +
+                                    (size_t) projection*
+                                        AW_PAIRFOLD_HOST_PROJECTION_BYTES;
+                            host.projections[projection] =
+                                    snapshot_projection;
+                            aw_cuda_throw(cudaMemcpyAsync(
+                                        snapshot_projection,
+                                        sources[layer][device][
+                                            projection],
+                                        AW_PAIRFOLD_HOST_PROJECTION_BYTES,
+                                        cudaMemcpyDeviceToHost,
+                                        aw_pairfold_host_devices[
+                                            device].stream),
+                                    "snapshot raw T64 PairFold weights");
+                        }
+                        host.projection_bytes[projection] =
+                                AW_PAIRFOLD_HOST_PROJECTION_BYTES;
+                    }
+                    host_bytes +=
+                            AW_PAIRFOLD_HOST_LAYER_BYTES;
+                    for (int bank = 0;
+                            bank <
+                                AW_PAIRFOLD_HOST_GENERATIONS;
+                            ++bank) {
+                        aw_pairfold_host_create_record(
+                                bank, layer, device);
+                    }
+                }
+            }
+            for (int device = 0; device < AW_GPU_COUNT;
+                    ++device) {
+                aw_cuda_throw(cudaSetDevice(device),
+                        "set PairFold host snapshot sync device");
+                aw_cuda_throw(cudaStreamSynchronize(
+                            aw_pairfold_host_devices[
+                                device].stream),
+                        "synchronize PairFold host snapshot");
+            }
+            const double snapshot_ms =
+                    config.loader_placement ? 0.0 :
+                    std::chrono::duration<double,
+                        std::milli>(
+                            std::chrono::steady_clock::now() -
+                            snapshot_begin).count();
+            fprintf(stderr,
+                    "AffinityWave: PairFold host weights pinned=1 source=%s layers=%d:%d host-bytes=%llu registered-tensors=%d pack-ms=%.3f snapshot-ms=%.3f device-slots=2 slot-bytes=%zu bytes/GPU=%zu prefetch=%s copy=%s h2d=%s\n",
+                    config.loader_placement ?
+                        "loader" : "snapshot",
+                    config.first_layer, config.last_layer,
+                    (unsigned long long) host_bytes,
+                    config.loader_placement ?
+                        aw_pairfold_host_registered_tensors :
+                        0,
+                    config.loader_placement ?
+                        aw_pairfold_host_pack_ms : 0.0,
+                    snapshot_ms,
+                    AW_PAIRFOLD_HOST_LAYER_BYTES,
+                    (size_t) AW_PAIRFOLD_HOST_SLOTS*
+                        AW_PAIRFOLD_HOST_LAYER_BYTES,
+                    config.lookahead ?
+                        "pair-lookahead" : "task-local",
+                    config.loader_placement ?
+                        "loader-projections" :
+                    config.phased ?
+                        "gate-up-down" : "contiguous",
+                    config.serial_h2d ?
+                        "global-serial" : "parallel");
+            for (int device = 0;
+                    device < AW_GPU_COUNT; ++device) {
+                fprintf(stderr,
+                        "AffinityWave: PairFold host memory source=%s device=%d free-before-slots=%zu free-after-slots=%zu slot-allocation=%zu\n",
+                        config.loader_placement ?
+                            "loader" : "snapshot",
+                        device,
+                        free_before_slots[device],
+                        free_after_slots[device],
+                        free_before_slots[device] >=
+                                free_after_slots[device] ?
+                            free_before_slots[device] -
+                                free_after_slots[device] :
+                            0);
+            }
+        } catch (const std::exception & exception) {
+            aw_pairfold_host_error = exception.what();
+        }
+    });
+    if (!aw_pairfold_host_error.empty()) {
+        throw std::runtime_error(
+                aw_pairfold_host_error);
+    }
+}
+
+static void aw_pairfold_host_report(int generation) {
+    if (generation < 0 ||
+            !aw_pairfold_host_get_config().enabled) {
+        return;
+    }
+    const int bank =
+            generation %
+            AW_PAIRFOLD_HOST_GENERATIONS;
+    if (aw_pairfold_host_reported[bank] ==
+            generation) {
+        return;
+    }
+    const aw_pairfold_host_config & config =
+            aw_pairfold_host_get_config();
+    uint64_t total_bytes = 0;
+    double critical_copy_ms = 0.0;
+    double gate_up_wait_ms = 0.0;
+    double down_wait_ms = 0.0;
+    double min_device_gib_s =
+            std::numeric_limits<double>::infinity();
+    double max_device_gib_s = 0.0;
+    int layers = 0;
+    const aw_pairwave_manifest & manifest =
+            aw_pairwave_get_manifest();
+    const bool serial_h2d =
+            config.serial_h2d;
+    for (int layer = config.first_layer;
+            layer <= config.last_layer; ++layer) {
+        const int active0 =
+                manifest.layers[layer].pair*2;
+        double layer_copy_ms = 0.0;
+        double layer_copy_sum_ms = 0.0;
+        double layer_gate_up_wait_ms = 0.0;
+        double layer_down_wait_ms = 0.0;
+        bool complete = true;
+        for (int device : {active0, active0 + 1}) {
+            const aw_pairfold_host_record & record =
+                    aw_pairfold_host_records[
+                        bank][layer][device];
+            if (record.generation != generation ||
+                    !record.waits_recorded) {
+                complete = false;
+            }
+        }
+        if (!complete) {
+            fprintf(stderr,
+                    "AffinityWave: PairFold host generation=%d layer=%d timing=incomplete\n",
+                    generation, layer);
+            continue;
+        }
+        for (int device : {active0, active0 + 1}) {
+            aw_pairfold_host_record & record =
+                    aw_pairfold_host_records[
+                        bank][layer][device];
+            aw_cuda_throw(cudaSetDevice(device),
+                    "set PairFold host report device");
+            aw_cuda_throw(cudaEventSynchronize(
+                        record.down_acquired),
+                    "synchronize PairFold host report");
+            float copy_ms = 0.0f;
+            float gate_up_ms = 0.0f;
+            float down_ms = 0.0f;
+            aw_cuda_throw(cudaEventElapsedTime(
+                        &copy_ms, record.copy_begin,
+                        record.copy_end),
+                    "measure PairFold host copy");
+            aw_cuda_throw(cudaEventElapsedTime(
+                        &gate_up_ms, record.deadline,
+                        record.acquired),
+                    "measure PairFold host gate/up wait");
+            aw_cuda_throw(cudaEventElapsedTime(
+                        &down_ms, record.down_deadline,
+                        record.down_acquired),
+                    "measure PairFold host down wait");
+            layer_copy_ms = std::max(
+                    layer_copy_ms, (double) copy_ms);
+            layer_copy_sum_ms += copy_ms;
+            layer_gate_up_wait_ms = std::max(
+                    layer_gate_up_wait_ms,
+                    (double) gate_up_ms);
+            layer_down_wait_ms = std::max(
+                    layer_down_wait_ms,
+                    (double) down_ms);
+            const double gib_s =
+                    AW_PAIRFOLD_HOST_LAYER_BYTES/
+                    (1024.0*1024.0*1024.0)/
+                    ((double) copy_ms/1000.0);
+            min_device_gib_s =
+                    std::min(min_device_gib_s, gib_s);
+            max_device_gib_s =
+                    std::max(max_device_gib_s, gib_s);
+        }
+        const double layer_span_ms =
+                serial_h2d ?
+                layer_copy_sum_ms : layer_copy_ms;
+        const double pair_gib_s =
+                (2.0*AW_PAIRFOLD_HOST_LAYER_BYTES)/
+                (1024.0*1024.0*1024.0)/
+                (layer_span_ms/1000.0);
+        fprintf(stderr,
+                "AffinityWave: PairFold host generation=%d layer=%d pair=%d h2d-bytes=%zu h2d-ms=%.3f pair-GiB/s=%.3f gate-up-wait-ms=%.3f down-wait-ms=%.3f\n",
+                generation, layer,
+                manifest.layers[layer].pair,
+                (size_t) 2*
+                    AW_PAIRFOLD_HOST_LAYER_BYTES,
+                layer_span_ms, pair_gib_s,
+                layer_gate_up_wait_ms,
+                layer_down_wait_ms);
+        total_bytes +=
+                (uint64_t) 2*
+                AW_PAIRFOLD_HOST_LAYER_BYTES;
+        critical_copy_ms += layer_span_ms;
+        gate_up_wait_ms += layer_gate_up_wait_ms;
+        down_wait_ms += layer_down_wait_ms;
+        ++layers;
+    }
+    if (layers == 0) {
+        fprintf(stderr,
+                "AffinityWave: PairFold host generation=%d summary timing=incomplete\n",
+                generation);
+        aw_pairfold_host_reported[bank] =
+                generation;
+        return;
+    }
+    const double serialized_gib_s =
+            total_bytes/(1024.0*1024.0*1024.0)/
+            (critical_copy_ms/1000.0);
+    fprintf(stderr,
+            "AffinityWave: PairFold host generation=%d summary layers=%d h2d-bytes=%llu serialized-pair-GiB/s=%.3f device-GiB/s=%.3f:%.3f gate-up-wait-ms=%.3f down-wait-ms=%.3f\n",
+            generation, layers,
+            (unsigned long long) total_bytes,
+            serialized_gib_s,
+            min_device_gib_s, max_device_gib_s,
+            gate_up_wait_ms, down_wait_ms);
+    aw_pairfold_host_reported[bank] =
+            generation;
+}
+
+static void aw_pairfold_host_enqueue_layer(
+        int generation, int layer) {
+    const aw_pairfold_host_config & config =
+            aw_pairfold_host_get_config();
+    if (!config.enabled ||
+            layer < config.first_layer ||
+            layer > config.last_layer) {
+        throw std::runtime_error(
+                "PairFold host prefetch layer is not selected");
+    }
+    const aw_pairwave_manifest & manifest =
+            aw_pairwave_get_manifest();
+    const int slot =
+            ggml_pairfold::weight_slot_for_layer(layer);
+    const int active0 =
+            manifest.layers[layer].pair*2;
+    std::unique_lock<std::mutex> h2d_lock(
+            aw_pairfold_host_h2d_mutex,
+            std::defer_lock);
+    if (config.serial_h2d) {
+        h2d_lock.lock();
+    }
+    for (int device : {active0, active0 + 1}) {
+        aw_cuda_throw(cudaSetDevice(device),
+                "set PairFold host prefetch device");
+        aw_pairfold_host_device & state =
+                aw_pairfold_host_devices[device];
+        aw_pairfold_host_slot & target =
+                state.slots[slot];
+        if (target.generation == generation &&
+                target.layer == layer) {
+            continue;
+        }
+        if (target.layer >= 0 &&
+                (target.released_generation !=
+                        target.generation ||
+                 target.released_layer != target.layer ||
+                 target.released_panel != 1)) {
+            throw std::runtime_error(
+                    "PairFold host slot was reused before panel 1 release");
+        }
+        aw_pairfold_host_source & source =
+                aw_pairfold_host_layers[layer][device];
+        for (int projection = 0;
+                projection < 3; ++projection) {
+            if (source.projections[projection] == nullptr ||
+                    source.projection_bytes[projection] !=
+                        AW_PAIRFOLD_HOST_PROJECTION_BYTES) {
+                throw std::runtime_error(
+                        "PairFold host source is missing");
+            }
+        }
+        aw_cuda_throw(cudaStreamWaitEvent(
+                    state.stream, target.free, 0),
+                "wait for PairFold host slot");
+        if (config.serial_h2d &&
+                aw_pairfold_host_h2d_tail != nullptr) {
+            aw_cuda_throw(cudaStreamWaitEvent(
+                        state.stream,
+                        aw_pairfold_host_h2d_tail, 0),
+                    "serialize PairFold host H2D");
+        }
+        const int bank =
+                generation %
+                AW_PAIRFOLD_HOST_GENERATIONS;
+        aw_pairfold_host_record & record =
+                aw_pairfold_host_records[
+                    bank][layer][device];
+        record.generation = generation;
+        record.waits_recorded = false;
+        aw_cuda_throw(cudaEventRecord(
+                    record.copy_begin,
+                    state.stream),
+                "record PairFold host copy begin");
+        if (config.phased || source.loader) {
+            for (int projection = 0;
+                    projection < 3; ++projection) {
+                const size_t offset =
+                        (size_t) projection*
+                        AW_PAIRFOLD_HOST_PROJECTION_BYTES;
+                aw_cuda_throw(cudaMemcpyAsync(
+                            (char *) target.weights.get() +
+                                offset,
+                            source.projections[
+                                projection],
+                            AW_PAIRFOLD_HOST_PROJECTION_BYTES,
+                            cudaMemcpyHostToDevice,
+                            state.stream),
+                        "stream PairFold host projection");
+                if (projection == AW_PROJECTION_UP) {
+                    aw_cuda_throw(cudaEventRecord(
+                                target.gate_up_ready,
+                                state.stream),
+                            "record PairFold host gate/up ready");
+                }
+            }
+        } else {
+            aw_cuda_throw(cudaMemcpyAsync(
+                        target.weights.get(),
+                        source.snapshot.data,
+                        AW_PAIRFOLD_HOST_LAYER_BYTES,
+                        cudaMemcpyHostToDevice,
+                        state.stream),
+                    "stream PairFold host weights");
+            aw_cuda_throw(cudaEventRecord(
+                        target.gate_up_ready,
+                        state.stream),
+                    "record PairFold host gate/up ready");
+        }
+        aw_cuda_throw(cudaEventRecord(
+                    record.copy_end,
+                    state.stream),
+                "record PairFold host copy end");
+        aw_cuda_throw(cudaEventRecord(
+                    target.ready, state.stream),
+                "record PairFold host slot ready");
+        if (config.serial_h2d) {
+            aw_pairfold_host_h2d_tail =
+                    record.copy_end;
+        }
+        target.generation = generation;
+        target.layer = layer;
+        target.released_generation = -1;
+        target.released_layer = -1;
+        target.released_panel = -1;
+    }
+}
+
+static int aw_pairfold_host_next_layer(
+        int layer, int pair) {
+    const aw_pairfold_host_config & config =
+            aw_pairfold_host_get_config();
+    const aw_pairwave_manifest & manifest =
+            aw_pairwave_get_manifest();
+    for (int next = std::max(
+                layer + 1, config.first_layer);
+            next <= config.last_layer; ++next) {
+        if (manifest.layers[next].pair == pair) {
+            return next;
+        }
+    }
+    return -1;
+}
+
+static void aw_pairfold_host_prime(int generation) {
+    const aw_pairfold_host_config & config =
+            aw_pairfold_host_get_config();
+    const aw_pairwave_manifest & manifest =
+            aw_pairwave_get_manifest();
+    for (int pair = 0; pair < 2; ++pair) {
+        for (int layer = config.first_layer;
+                layer <= config.last_layer; ++layer) {
+            if (manifest.layers[layer].pair != pair) {
+                continue;
+            }
+            aw_pairfold_host_enqueue_layer(
+                    generation, layer);
+            break;
+        }
+    }
+}
+
 static void aw_group_load_placement() {
     for (int layer = 0; layer < AW_LAYERS; ++layer) {
         for (int owner = 0; owner < AW_GPU_COUNT; ++owner) {
@@ -12473,6 +13354,28 @@ static void aw_live_pairwave_panel(
             (size_t) AW_EXPERT_FF*
             (AW_EMBD/AW_KSTAGE)*
             AW_Q8_BLOCK_BYTES;
+    const bool host_weights =
+            cells[0].weight_slot >= 0 ||
+            cells[1].weight_slot >= 0;
+    const int pairfold_panel =
+            pairfold_local ?
+            cells[0].reserved/2 : -1;
+    if (host_weights &&
+            (!pairfold_local ||
+             cells[0].weight_slot !=
+                cells[1].weight_slot ||
+             cells[0].weight_generation !=
+                cells[1].weight_generation ||
+             cells[0].weight_slot !=
+                ggml_pairfold::weight_slot_for_layer(
+                    layer) ||
+             pairfold_panel < 0 ||
+             pairfold_panel >= 2 ||
+             cells[1].reserved/2 !=
+                pairfold_panel)) {
+        throw std::runtime_error(
+                "PairWave host weight lease is invalid");
+    }
 
     for (int device = 0; device < AW_GPU_COUNT;
             ++device) {
@@ -12487,7 +13390,30 @@ static void aw_live_pairwave_panel(
 
     std::array<std::array<const char *, 3>,
             AW_GPU_COUNT> weight_bases{};
-    {
+    if (host_weights) {
+        for (int active : {active0, active1}) {
+            const aw_pairfold_host_slot & slot =
+                    aw_pairfold_host_devices[
+                        active].slots[
+                            cells[0].weight_slot];
+            if (slot.generation !=
+                        cells[0].weight_generation ||
+                    slot.layer != layer ||
+                    slot.weights.size() !=
+                        AW_PAIRFOLD_HOST_LAYER_BYTES) {
+                throw std::runtime_error(
+                        "PairWave host weight slot is stale");
+            }
+            for (int projection = 0;
+                    projection < 3; ++projection) {
+                weight_bases[active][projection] =
+                        (const char *)
+                            slot.weights.get() +
+                        (size_t) projection*
+                            AW_PAIRFOLD_HOST_PROJECTION_BYTES;
+            }
+        }
+    } else {
         std::lock_guard<std::mutex> lock(
                 aw_layout_mutex);
         for (int active : {active0, active1}) {
@@ -12839,6 +13765,35 @@ static void aw_live_pairwave_panel(
             throw std::runtime_error(
                     "PairWave SM count was not initialized");
         }
+        if (host_weights) {
+            aw_pairfold_host_slot & slot =
+                    aw_pairfold_host_devices[
+                        active].slots[
+                            cells[0].weight_slot];
+            aw_pairfold_host_record & record =
+                    aw_pairfold_host_records[
+                        cells[0].weight_generation %
+                            AW_PAIRFOLD_HOST_GENERATIONS]
+                        [layer][active];
+            if (record.generation !=
+                    cells[0].weight_generation) {
+                throw std::runtime_error(
+                        "PairWave host timing lease is stale");
+            }
+            if (pairfold_panel == 0) {
+                aw_cuda_throw(cudaEventRecord(
+                            record.deadline, stream),
+                        "record PairFold host deadline");
+            }
+            aw_cuda_throw(cudaStreamWaitEvent(
+                        stream, slot.gate_up_ready, 0),
+                    "wait for PairFold host gate/up weights");
+            if (pairfold_panel == 0) {
+                aw_cuda_throw(cudaEventRecord(
+                            record.acquired, stream),
+                        "record PairFold host acquisition");
+            }
+        }
         aw_live_launch_projection(
                 state, state.gate_desc,
                 AW_EXPERT_FF, AW_EMBD,
@@ -12896,6 +13851,33 @@ static void aw_live_pairwave_panel(
             }
             const int sm_count =
                     aw_sm_counts[active];
+            if (host_weights && panel == 0) {
+                aw_pairfold_host_slot & slot =
+                        aw_pairfold_host_devices[
+                            active].slots[
+                                cells[0].weight_slot];
+                aw_pairfold_host_record & record =
+                        aw_pairfold_host_records[
+                            cells[0].weight_generation %
+                                AW_PAIRFOLD_HOST_GENERATIONS]
+                            [layer][active];
+                if (pairfold_panel == 0) {
+                    aw_cuda_throw(cudaEventRecord(
+                                record.down_deadline,
+                                stream),
+                            "record PairFold host down deadline");
+                }
+                aw_cuda_throw(cudaStreamWaitEvent(
+                            stream, slot.ready, 0),
+                        "wait for PairFold host down weights");
+                if (pairfold_panel == 0) {
+                    aw_cuda_throw(cudaEventRecord(
+                                record.down_acquired,
+                                stream),
+                            "record PairFold host down acquisition");
+                    record.waits_recorded = true;
+                }
+            }
             aw_live_launch_projection(
                     state,
                     state.down_panel_desc,
@@ -12906,6 +13888,21 @@ static void aw_live_pairwave_panel(
                         descriptors,
                     bundle_m32, bundle_m16,
                     bundle_m16_ctas, 2, true);
+            if (host_weights &&
+                    panel + 1 == down_panels &&
+                    pairfold_panel == 1) {
+                aw_pairfold_host_slot & slot =
+                        aw_pairfold_host_devices[
+                            active].slots[
+                                cells[0].weight_slot];
+                aw_cuda_throw(cudaEventRecord(
+                            slot.free, stream),
+                        "release PairFold host weight slot");
+                slot.released_generation =
+                        cells[0].weight_generation;
+                slot.released_layer = layer;
+                slot.released_panel = pairfold_panel;
+            }
             const bool fused_pair_reduce =
                     p100_exact && panel_n == 512 &&
                     ((uintptr_t) scratch.route_meta.get() %
@@ -15714,6 +16711,117 @@ int ggml_cuda_affinity_wave_pairfold_service(
             error, error_capacity, true);
 }
 
+int ggml_cuda_affinity_wave_pairfold_host_weights_generation(
+        int32_t generation,
+        int32_t action,
+        char * error,
+        size_t error_capacity) {
+    try {
+        if (generation < 0 ||
+                (action != 0 && action != 1)) {
+            throw std::runtime_error(
+                    "invalid PairFold host generation request");
+        }
+        const aw_pairfold_host_config & config =
+                aw_pairfold_host_get_config();
+        if (!config.enabled) {
+            return 0;
+        }
+        if (action == 0) {
+            aw_pairfold_host_prepare();
+            aw_pairfold_host_report(generation - 1);
+            if (config.lookahead) {
+                aw_pairfold_host_prime(generation);
+            }
+        } else {
+            aw_pairfold_host_report(generation);
+        }
+        return 0;
+    } catch (const std::exception & exception) {
+        aw_set_error(error, error_capacity,
+                exception.what());
+        return 1;
+    }
+}
+
+int ggml_cuda_affinity_wave_pairfold_host_weights_prefetch(
+        int32_t generation,
+        int32_t layer,
+        int32_t panel,
+        int32_t * slot_out,
+        char * error,
+        size_t error_capacity) {
+    try {
+        if (generation < 0 || layer < 0 ||
+                layer >= AW_LAYERS ||
+                panel < 0 || panel >= 2 ||
+                slot_out == nullptr) {
+            throw std::runtime_error(
+                    "invalid PairFold host prefetch request");
+        }
+        *slot_out = -1;
+        if (!aw_pairfold_host_layer_selected(layer)) {
+            return 0;
+        }
+        aw_pairfold_host_prepare();
+        const aw_pairwave_manifest & manifest =
+                aw_pairwave_get_manifest();
+        const int slot =
+                ggml_pairfold::weight_slot_for_layer(layer);
+        const int active0 =
+                manifest.layers[layer].pair*2;
+        if (panel == 0) {
+            const aw_pairfold_host_config & config =
+                    aw_pairfold_host_get_config();
+            if (config.lookahead) {
+                for (int device : {active0, active0 + 1}) {
+                    const aw_pairfold_host_slot & target =
+                            aw_pairfold_host_devices[
+                                device].slots[slot];
+                    if (target.generation != generation ||
+                            target.layer != layer) {
+                        throw std::runtime_error(
+                                "PairFold host lookahead lease is stale");
+                    }
+                }
+                const int next =
+                        aw_pairfold_host_next_layer(
+                            layer,
+                            manifest.layers[layer].pair);
+                if (next >= 0) {
+                    if (ggml_pairfold::weight_slot_for_layer(
+                                next) == slot) {
+                        throw std::runtime_error(
+                                "PairFold host lookahead did not alternate slots");
+                    }
+                    aw_pairfold_host_enqueue_layer(
+                            generation, next);
+                }
+            } else {
+                aw_pairfold_host_enqueue_layer(
+                        generation, layer);
+            }
+        } else {
+            for (int device : {active0, active0 + 1}) {
+                const aw_pairfold_host_slot & target =
+                        aw_pairfold_host_devices[
+                            device].slots[slot];
+                if (target.generation != generation ||
+                        target.layer != layer) {
+                    throw std::runtime_error(
+                            "PairFold host panel lease is stale");
+                }
+            }
+        }
+        *slot_out = slot;
+        return 0;
+    } catch (const std::exception & exception) {
+        aw_set_error(error, error_capacity,
+                exception.what());
+        return 1;
+    }
+}
+
 bool ggml_cuda_affinity_wave_t64_enabled() {
     static const bool enabled = aw_env_on(getenv("GGML_CUDA_AFFINITY_WAVE")) &&
             getenv("GGML_CUDA_AW_Q8_LAYOUT") != nullptr &&
@@ -15788,6 +16896,211 @@ static int aw_tensor_projection(const ggml_tensor * tensor) {
     return -1;
 }
 
+int ggml_cuda_affinity_wave_pairfold_register_host_tensor(
+        ggml_tensor * tensor,
+        int32_t logical_device,
+        char * error,
+        size_t error_capacity) {
+    try {
+        const aw_pairfold_host_config & config =
+                aw_pairfold_host_get_config();
+        if (!config.enabled ||
+                !config.loader_placement) {
+            throw std::runtime_error(
+                    "PairFold loader host registration is disabled");
+        }
+        if (!ggml_cuda_affinity_wave_t64_enabled()) {
+            throw std::runtime_error(
+                    "PairFold loader host registration requires T64");
+        }
+        if (tensor == nullptr) {
+            throw std::runtime_error(
+                    "PairFold loader host tensor is incompatible");
+        }
+        if (logical_device < 0 ||
+                logical_device >= AW_GPU_COUNT) {
+            throw std::runtime_error(
+                    "PairFold loader host device is invalid");
+        }
+        if (tensor->ne[2] == 0) {
+            return 0;
+        }
+        if (tensor->data == nullptr ||
+                tensor->type != GGML_TYPE_Q8_0 ||
+                tensor->ne[3] != 1 ||
+                !ggml_is_contiguous(tensor)) {
+            throw std::runtime_error(
+                    "PairFold loader host tensor is incompatible");
+        }
+
+        int layer = -1;
+        if (sscanf(tensor->name, "blk.%d.", &layer) != 1 ||
+                !aw_pairfold_host_layer_selected(layer)) {
+            throw std::runtime_error(
+                    "PairFold loader host layer is not selected");
+        }
+        const int projection =
+                aw_tensor_projection(tensor);
+        if (projection < AW_PROJECTION_GATE ||
+                projection > AW_PROJECTION_DOWN) {
+            throw std::runtime_error(
+                    "PairFold loader host projection is invalid");
+        }
+        const char * projection_name =
+                projection == AW_PROJECTION_GATE ?
+                    "ffn_gate_exps.weight" :
+                projection == AW_PROJECTION_UP ?
+                    "ffn_up_exps.weight" :
+                    "ffn_down_exps.weight";
+        char expected_name[96];
+        snprintf(expected_name, sizeof(expected_name),
+                "blk.%d.%s", layer, projection_name);
+        if (strcmp(tensor->name, expected_name) != 0) {
+            throw std::runtime_error(
+                    "PairFold loader host tensor name is not exact");
+        }
+
+        const int expected_n =
+                projection == AW_PROJECTION_DOWN ?
+                    AW_EMBD : AW_EXPERT_FF;
+        const int expected_k =
+                projection == AW_PROJECTION_DOWN ?
+                    AW_EXPERT_FF : AW_EMBD;
+        const size_t bytes = ggml_nbytes(tensor);
+        if (tensor->ne[1] != expected_n ||
+                tensor->ne[0] != expected_k ||
+                tensor->ne[2] !=
+                    2*AW_PRIMARY_PER_GPU ||
+                bytes !=
+                    AW_PAIRFOLD_HOST_PROJECTION_BYTES) {
+            throw std::runtime_error(
+                    "PairFold loader host tensor shape is incompatible");
+        }
+
+        const aw_pairwave_manifest & manifest =
+                aw_pairwave_get_manifest();
+        const int active0 =
+                manifest.layers[layer].pair*2;
+        if (logical_device != active0 &&
+                logical_device != active0 + 1) {
+            throw std::runtime_error(
+                    "PairFold loader host tensor is on the inactive pair");
+        }
+        if (getenv("GGML_CUDA_NO_PINNED") != nullptr) {
+            throw std::runtime_error(
+                    "PairFold loader host tensor is not pinned");
+        }
+        cudaPointerAttributes attributes{};
+        const cudaError_t attributes_status =
+                cudaPointerGetAttributes(
+                    &attributes, tensor->data);
+        if (attributes_status != cudaSuccess) {
+            (void) cudaGetLastError();
+            throw std::runtime_error(
+                    "PairFold loader host allocation fell back to pageable memory");
+        }
+#if CUDART_VERSION >= 10000
+        if (attributes.type != cudaMemoryTypeHost) {
+#else
+        if (attributes.memoryType != cudaMemoryTypeHost) {
+#endif
+            throw std::runtime_error(
+                    "PairFold loader host allocation is not CUDA-pinned");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(
+                    aw_layout_mutex);
+            if (aw_pairfold_host_prepare_started.load(
+                        std::memory_order_acquire)) {
+                throw std::runtime_error(
+                        "PairFold loader host placement supports one model per process");
+            }
+            const bool duplicate = std::any_of(
+                    aw_pairfold_host_layout_entries.begin(),
+                    aw_pairfold_host_layout_entries.end(),
+                    [&](const aw_layout_entry & entry) {
+                return entry.device == logical_device &&
+                        entry.layer == layer &&
+                        entry.projection == projection;
+            });
+            if (duplicate) {
+                throw std::runtime_error(
+                        "PairFold loader host tensor was registered twice");
+            }
+        }
+
+        const auto pack_begin =
+                std::chrono::steady_clock::now();
+        std::vector<char> packed(bytes);
+        if (!ggml_pairfold::pack_q8_0_t64(
+                    tensor->data, packed.data(), bytes,
+                    expected_n, expected_k)) {
+            throw std::runtime_error(
+                    "PairFold loader host T64 packing failed");
+        }
+        memcpy(tensor->data, packed.data(), bytes);
+        const double pack_ms =
+                std::chrono::duration<double,
+                    std::milli>(
+                        std::chrono::steady_clock::now() -
+                        pack_begin).count();
+
+        int registered = 0;
+        uint64_t registered_bytes = 0;
+        double total_pack_ms = 0.0;
+        {
+            std::lock_guard<std::mutex> lock(
+                    aw_layout_mutex);
+            if (aw_pairfold_host_prepare_started.load(
+                        std::memory_order_acquire)) {
+                throw std::runtime_error(
+                        "PairFold loader host placement began during model load");
+            }
+            const bool duplicate = std::any_of(
+                    aw_pairfold_host_layout_entries.begin(),
+                    aw_pairfold_host_layout_entries.end(),
+                    [&](const aw_layout_entry & entry) {
+                return entry.device == logical_device &&
+                        entry.layer == layer &&
+                        entry.projection == projection;
+            });
+            if (duplicate) {
+                throw std::runtime_error(
+                        "PairFold loader host tensor was registered concurrently");
+            }
+            aw_pairfold_host_layout_entries.push_back({
+                    tensor->data, bytes, expected_n,
+                    expected_k, logical_device, layer,
+                    projection});
+            aw_pairfold_host_registered_bytes += bytes;
+            ++aw_pairfold_host_registered_tensors;
+            aw_pairfold_host_pack_ms += pack_ms;
+            registered =
+                    aw_pairfold_host_registered_tensors;
+            registered_bytes =
+                    aw_pairfold_host_registered_bytes;
+            total_pack_ms =
+                    aw_pairfold_host_pack_ms;
+        }
+        if (registered == 1 ||
+                registered % 6 == 0) {
+            fprintf(stderr,
+                    "AffinityWave: PairFold loader host tensors=%d bytes=%llu pack-ms=%.3f latest=%s device=%d\n",
+                    registered,
+                    (unsigned long long)
+                        registered_bytes,
+                    total_pack_ms, tensor->name,
+                    logical_device);
+        }
+        return 0;
+    } catch (const std::exception & exception) {
+        aw_set_error(error, error_capacity,
+                exception.what());
+        return 1;
+    }
+}
+
 bool ggml_cuda_affinity_wave_is_t64(const void * data) {
     if (!ggml_cuda_affinity_wave_t64_enabled() || data == nullptr) {
         return false;
@@ -15822,6 +17135,55 @@ void ggml_cuda_affinity_wave_forget_range(const void * data, size_t size) {
                 const uintptr_t ptr = (uintptr_t) entry.data;
                 return ptr >= begin && ptr < end;
             }), aw_layout_entries.end());
+    uint64_t removed_host_bytes = 0;
+    int removed_host_tensors = 0;
+    aw_pairfold_host_layout_entries.erase(
+            std::remove_if(
+                aw_pairfold_host_layout_entries.begin(),
+                aw_pairfold_host_layout_entries.end(),
+                [&](const aw_layout_entry & entry) {
+                    const uintptr_t ptr =
+                            (uintptr_t) entry.data;
+                    const bool remove =
+                            ptr >= begin && ptr < end;
+                    if (remove) {
+                        removed_host_bytes += entry.bytes;
+                        ++removed_host_tensors;
+                    }
+                    return remove;
+                }),
+            aw_pairfold_host_layout_entries.end());
+    aw_pairfold_host_registered_bytes -=
+            std::min(
+                aw_pairfold_host_registered_bytes,
+                removed_host_bytes);
+    aw_pairfold_host_registered_tensors -=
+            std::min(
+                aw_pairfold_host_registered_tensors,
+                removed_host_tensors);
+    if (aw_pairfold_host_registered_tensors == 0) {
+        aw_pairfold_host_pack_ms = 0.0;
+    }
+    for (auto & layer : aw_pairfold_host_layers) {
+        for (aw_pairfold_host_source & source : layer) {
+            if (!source.loader) {
+                continue;
+            }
+            for (int projection = 0;
+                    projection < 3; ++projection) {
+                const uintptr_t ptr =
+                        (uintptr_t)
+                            source.projections[
+                                projection];
+                if (ptr >= begin && ptr < end) {
+                    source.projections[projection] =
+                            nullptr;
+                    source.projection_bytes[
+                            projection] = 0;
+                }
+            }
+        }
+    }
 }
 
 static void aw_repack_uploaded_tensor(
@@ -16014,6 +17376,23 @@ void ggml_cuda_affinity_wave_validate_env_or_abort() {
         (void) aw_pairwave_get_manifest();
     } catch (const std::exception & exception) {
         GGML_ABORT("AffinityWave PairWave configuration error: %s",
+                exception.what());
+    }
+    try {
+        const aw_pairfold_host_config & host =
+                aw_pairfold_host_get_config();
+        if (host.enabled &&
+                (getenv("GGML_CUDA_AW_PAIRFOLD") ==
+                    nullptr ||
+                 strcmp(getenv(
+                    "GGML_CUDA_AW_PAIRFOLD"),
+                    "1") != 0)) {
+            throw std::runtime_error(
+                    "PairFold host weights require GGML_CUDA_AW_PAIRFOLD=1");
+        }
+    } catch (const std::exception & exception) {
+        GGML_ABORT(
+                "AffinityWave PairFold host configuration error: %s",
                 exception.what());
     }
     aw_config config;

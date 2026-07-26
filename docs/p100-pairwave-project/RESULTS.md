@@ -71,6 +71,8 @@ production rate.
 | --- | ---: | --- | --- |
 | Exact diagonal N2048 + CohortRail | 2912.264 tok/s | paired pp8128 runtime, complete exactness | production-qualified, default-off |
 | PairFold two-pair wavefront | 2685.133 tok/s | five-sample warm pp8128 runtime, c512 byte identity | experimental, default-off |
+| PairFold loader-host 16:23 | 2470.821 tok/s | five-sample warm pp8128 runtime, accepted c512 logits hash | experimental, default-off |
+| PairFold loader-host 0:39 | 1917.858 tok/s | five-sample warm pp8128 runtime, accepted c512 logits hash | experimental, default-off |
 | PairWave N512, 25% copy | 2921.533 tok/s | calibrated replay | not a runtime rate |
 | PairWave zero-copy/tax bound | 2969.340 tok/s | optimistic replay bound | not attainable evidence |
 | PairCache static R16 | 3108.549 tok/s | untouched-test replay | blocked, not implemented |
@@ -100,6 +102,27 @@ The original fresh-process 4050.309 ms result was cold and must not be used
 as steady-state throughput. Full PairFold architecture, exactness, trace,
 memory, prior experiments, and raw warm samples are documented in
 [PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md).
+
+## PairFold host-streaming result
+
+The loader-placement extension keeps selected PairWave expert projections in
+CUDA-pinned host memory and copies them through two bounded device slots per
+GPU. It preserves the exact PairWave permutation and T64 arithmetic.
+
+At layers 16 through 23, loader placement recovers 804 MiB/GPU and measures
+3289.595 ms / 2470.821 tok/s at warm pp8128.
+
+At all 40 PairFold inference layers, it:
+
+- registers 31.875 GiB of pinned host experts;
+- produces the accepted c512 saved-logits SHA-256;
+- recovers 7.109375 GiB/GPU;
+- measures 4238.061 ms / 1917.858 tok/s at warm pp8128;
+- leaves little host-memory margin on the 46 GiB qualification machine.
+
+The model's MTP `blk.40` and non-expert tensors remain resident. Full
+evidence and reproduction details are in
+[PAIRFOLD-HOST-STREAMING.md](PAIRFOLD-HOST-STREAMING.md).
 
 ## PairCache decision
 

@@ -1,0 +1,186 @@
+AffinityWave: CUDA loaded PairWave manifest /home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/docs/p100-pairwave-project/evidence/frontier/pairwave-laneexact-v3.manifest
+AffinityWave: expert service enabled; map=/home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-hot16.json wire=f32 layout=t64k32 kernel=interleave engine=cohortrail down-cache=0 m64-split=2 home=layer check=1 dense-t64=0 qkv-conv=0
+AffinityWave: in-place T64 expert loading, M64 plan prefill, and T64 MMVQ decode enabled
+ggml_cuda_init: found 4 CUDA devices (Total VRAM: 65077 MiB):
+  Device 0: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 1: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 2: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+  Device 3: Tesla P100-PCIE-16GB, compute capability 6.0, VMM: yes, VRAM: 16269 MiB
+AffinityWave: loading GGML_CUDA_MOE_EPLB_MAP /home/arian/llama.cpp-qwen36/results/qwen36-35b-moe-pp-20260721/affinitywave-20260722/placement-primary.eplb
+AffinityWave: loaded GGML_CUDA_MOE_EPLB_MAP layers=40
+AffinityWave: loaded PairWave manifest /home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/docs/p100-pairwave-project/evidence/frontier/pairwave-laneexact-v3.manifest fnv64=033eb5411b1174e6
+AffinityWave: meta set probe blk.0.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: upload probe name=blk.0.ffn_down_exps.weight type=q8_0 ne=512,2048,128,1 complete=0 contiguous=1 enabled=1 eligible=1
+AffinityWave: GPU0 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,128
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: GPU1 T64 expert tensors=1 (latest blk.0.ffn_down_exps.weight)
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,128
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,0
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_down_exps.weight ne=512,2048,0
+AffinityWave: repack callback found for blk.0.ffn_down_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_down_exps.weight
+AffinityWave: meta set probe blk.0.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,128
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA0
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,128
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA1
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,0
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA2
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta repack probe blk.0.ffn_gate_exps.weight ne=2048,512,0
+AffinityWave: repack callback found for blk.0.ffn_gate_exps.weight on CUDA3
+AffinityWave: CUDA repack callback blk.0.ffn_gate_exps.weight
+AffinityWave: meta set probe blk.0.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.1.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: GPU2 T64 expert tensors=1 (latest blk.1.ffn_down_exps.weight)
+AffinityWave: GPU3 T64 expert tensors=1 (latest blk.1.ffn_down_exps.weight)
+AffinityWave: meta set probe blk.1.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.1.ffn_up_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: meta set probe blk.2.ffn_down_exps.weight axis=2 segments=1 nr0=1 ne=512,2048,256
+AffinityWave: meta set probe blk.2.ffn_gate_exps.weight axis=2 segments=1 nr0=1 ne=2048,512,256
+AffinityWave: GPU2 T64 expert tensors=60 (latest blk.38.ffn_up_exps.weight)
+AffinityWave: GPU3 T64 expert tensors=60 (latest blk.38.ffn_up_exps.weight)
+AffinityWave: GPU0 T64 expert tensors=60 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: GPU1 T64 expert tensors=60 (latest blk.39.ffn_up_exps.weight)
+AffinityWave: pinned lane 0 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=47.7 MiB
+AffinityWave: PairFold hidden memory device=0 free-before=3932749824 free-after=3899195392 used-after=13160349696 allocation-delta=33554432 slots=2 bytes=33292288
+AffinityWave: PairFold hidden memory device=1 free-before=3991339008 free-after=3957784576 used-after=13101760512 allocation-delta=33554432 slots=2 bytes=33292288
+AffinityWave: PairFold hidden memory device=2 free-before=3563520000 free-after=3529965568 used-after=13529579520 allocation-delta=33554432 slots=2 bytes=33292288
+AffinityWave: PairFold hidden memory device=3 free-before=3563520000 free-after=3529965568 used-after=13529579520 allocation-delta=33554432 slots=2 bytes=33292288
+AffinityWave: PairFold host weights pinned=1 layers=16:23 host-bytes=6845104128 snapshot-ms=4935.705 device-slots=2 slot-bytes=427819008 bytes/GPU=855638016 prefetch=task-local copy=gate-up-down
+AffinityWave: PairFold handoff allocation slots=2 bytes=33292288/GPU task-events=80 generations=2
+AffinityWave: PairFold active manifest=/home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/docs/p100-pairwave-project/evidence/frontier/pairwave-laneexact-v3.manifest fnv64=033eb5411b1174e6 schedule=0101010101010101010110101010101010101010 tasks=80 generation=0 scheduler=pipelined recurrent=pair-gdn attention=literal-exact snapshots=canonical
+AffinityWave: exact dense selector device=1 algorithm=6 M=8192 N=2032 K=2048
+AffinityWave: exact dense selector device=0 algorithm=6 M=8192 N=2032 K=2048
+AffinityWave: exact dense selector device=1 algorithm=7 M=32 N=2032 K=2048
+AffinityWave: exact dense selector device=0 algorithm=7 M=32 N=2032 K=2048
+AffinityWave: PairFold GDN active tokens=2032 segment=508 scratch=6.48 MiB/GPU
+AffinityWave: exact dense selector device=1 algorithm=5 M=4096 N=2032 K=2048
+AffinityWave: exact dense selector device=1 algorithm=10 M=2048 N=2032 K=4096
+AffinityWave: exact dense selector device=0 algorithm=5 M=4096 N=2032 K=2048
+AffinityWave: exact dense selector device=0 algorithm=10 M=2048 N=2032 K=4096
+AffinityWave: live service entered cells=2
+AffinityWave: PairWave memory device=0 free-before=2976448512 free-after=2775121920 used-after=14284423168 allocation-delta=201326592 arena=199793408
+AffinityWave: PairWave memory device=1 free-before=3035037696 free-after=2833711104 used-after=14225833984 allocation-delta=201326592 arena=199793408
+AffinityWave: PairWave panel512 bundle=0 ctas=5 arena active0=199793408 active1=199793408 bytes
+AffinityWave: exact dense selector device=1 algorithm=3 M=512 N=2032 K=2048
+AffinityWave: exact dense selector device=1 algorithm=6 M=2048 N=2032 K=512
+AffinityWave: exact dense selector device=0 algorithm=3 M=512 N=2032 K=2048
+AffinityWave: exact dense selector device=0 algorithm=6 M=2048 N=2032 K=512
+AffinityWave: exact dense selector device=2 algorithm=6 M=8192 N=2032 K=2048
+AffinityWave: exact dense selector device=3 algorithm=6 M=8192 N=2032 K=2048
+AffinityWave: exact dense selector device=2 algorithm=7 M=32 N=2032 K=2048
+AffinityWave: exact dense selector device=3 algorithm=7 M=32 N=2032 K=2048
+AffinityWave: exact dense selector device=2 algorithm=5 M=4096 N=2032 K=2048
+AffinityWave: exact dense selector device=2 algorithm=10 M=2048 N=2032 K=4096
+AffinityWave: exact dense selector device=3 algorithm=5 M=4096 N=2032 K=2048
+AffinityWave: exact dense selector device=3 algorithm=10 M=2048 N=2032 K=4096
+AffinityWave: PairWave memory device=2 free-before=2607218688 free-after=2405892096 used-after=14653652992 allocation-delta=201326592 arena=199793408
+AffinityWave: PairWave memory device=3 free-before=2607218688 free-after=2405892096 used-after=14653652992 allocation-delta=201326592 arena=199793408
+AffinityWave: exact dense selector device=2 algorithm=3 M=512 N=2032 K=2048
+AffinityWave: exact dense selector device=2 algorithm=6 M=2048 N=2032 K=512
+AffinityWave: exact dense selector device=3 algorithm=3 M=512 N=2032 K=2048
+AffinityWave: exact dense selector device=3 algorithm=6 M=2048 N=2032 K=512
+AffinityWave: PairFold host generation=0 layer=16 pair=0 h2d-bytes=855638016 h2d-ms=136.674 pair-GiB/s=5.830 gate-up-wait-ms=0.041 down-wait-ms=9.998
+AffinityWave: PairFold host generation=0 layer=17 pair=1 h2d-bytes=855638016 h2d-ms=166.959 pair-GiB/s=4.773 gate-up-wait-ms=0.041 down-wait-ms=0.051
+AffinityWave: PairFold host generation=0 layer=18 pair=0 h2d-bytes=855638016 h2d-ms=166.312 pair-GiB/s=4.791 gate-up-wait-ms=0.041 down-wait-ms=0.042
+AffinityWave: PairFold host generation=0 layer=19 pair=1 h2d-bytes=855638016 h2d-ms=166.719 pair-GiB/s=4.780 gate-up-wait-ms=0.041 down-wait-ms=0.042
+AffinityWave: PairFold host generation=0 layer=20 pair=1 h2d-bytes=855638016 h2d-ms=153.222 pair-GiB/s=5.201 gate-up-wait-ms=0.033 down-wait-ms=0.028
+AffinityWave: PairFold host generation=0 layer=21 pair=0 h2d-bytes=855638016 h2d-ms=166.144 pair-GiB/s=4.796 gate-up-wait-ms=0.005 down-wait-ms=0.007
+AffinityWave: PairFold host generation=0 layer=22 pair=1 h2d-bytes=855638016 h2d-ms=123.309 pair-GiB/s=6.462 gate-up-wait-ms=0.005 down-wait-ms=0.006
+AffinityWave: PairFold host generation=0 layer=23 pair=0 h2d-bytes=855638016 h2d-ms=144.275 pair-GiB/s=5.523 gate-up-wait-ms=0.006 down-wait-ms=0.008
+AffinityWave: PairFold host generation=0 summary layers=8 h2d-bytes=6845104128 serialized-pair-GiB/s=5.210 device-GiB/s=2.386:3.238 gate-up-wait-ms=0.214 down-wait-ms=10.181
+AffinityWave: dense lane mode=service tokens=8128 cells=160 corridors=9922.0 MiB setup=19.030 ms wave=8548.701 ms tail=80.844 ms total=8648.575 ms throughput=939.8 tok/s; output=logits
+AffinityWave: pinned lane 0 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=47.7 MiB
+AffinityWave: PairFold generation=1 scheduler=pipelined lane-tokens=2032
+AffinityWave: PairFold host generation=1 layer=16 pair=0 h2d-bytes=855638016 h2d-ms=119.279 pair-GiB/s=6.681 gate-up-wait-ms=0.004 down-wait-ms=0.005
+AffinityWave: PairFold host generation=1 layer=17 pair=1 h2d-bytes=855638016 h2d-ms=129.646 pair-GiB/s=6.147 gate-up-wait-ms=0.005 down-wait-ms=0.008
+AffinityWave: PairFold host generation=1 layer=18 pair=0 h2d-bytes=855638016 h2d-ms=166.208 pair-GiB/s=4.794 gate-up-wait-ms=0.029 down-wait-ms=0.043
+AffinityWave: PairFold host generation=1 layer=19 pair=1 h2d-bytes=855638016 h2d-ms=155.601 pair-GiB/s=5.121 gate-up-wait-ms=0.026 down-wait-ms=0.042
+AffinityWave: PairFold host generation=1 layer=20 pair=1 h2d-bytes=855638016 h2d-ms=143.281 pair-GiB/s=5.562 gate-up-wait-ms=0.026 down-wait-ms=0.026
+AffinityWave: PairFold host generation=1 layer=21 pair=0 h2d-bytes=855638016 h2d-ms=134.938 pair-GiB/s=5.905 gate-up-wait-ms=0.006 down-wait-ms=0.006
+AffinityWave: PairFold host generation=1 layer=22 pair=1 h2d-bytes=855638016 h2d-ms=113.494 pair-GiB/s=7.021 gate-up-wait-ms=0.006 down-wait-ms=0.006
+AffinityWave: PairFold host generation=1 layer=23 pair=0 h2d-bytes=855638016 h2d-ms=122.700 pair-GiB/s=6.494 gate-up-wait-ms=0.008 down-wait-ms=0.006
+AffinityWave: PairFold host generation=1 summary layers=8 h2d-bytes=6845104128 serialized-pair-GiB/s=5.875 device-GiB/s=2.397:3.527 gate-up-wait-ms=0.111 down-wait-ms=0.142
+AffinityWave: dense lane mode=service tokens=8128 cells=160 corridors=9922.0 MiB setup=18.391 ms wave=3203.639 ms tail=1.697 ms total=3223.727 ms throughput=2521.3 tok/s; output=logits
+AffinityWave: pinned lane 0 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=47.7 MiB
+AffinityWave: PairFold generation=2 scheduler=pipelined lane-tokens=2032
+AffinityWave: PairFold host generation=2 layer=16 pair=0 h2d-bytes=855638016 h2d-ms=121.985 pair-GiB/s=6.533 gate-up-wait-ms=0.004 down-wait-ms=0.007
+AffinityWave: PairFold host generation=2 layer=17 pair=1 h2d-bytes=855638016 h2d-ms=135.055 pair-GiB/s=5.900 gate-up-wait-ms=0.004 down-wait-ms=0.008
+AffinityWave: PairFold host generation=2 layer=18 pair=0 h2d-bytes=855638016 h2d-ms=167.552 pair-GiB/s=4.756 gate-up-wait-ms=0.033 down-wait-ms=0.042
+AffinityWave: PairFold host generation=2 layer=19 pair=1 h2d-bytes=855638016 h2d-ms=155.509 pair-GiB/s=5.124 gate-up-wait-ms=0.027 down-wait-ms=0.041
+AffinityWave: PairFold host generation=2 layer=20 pair=1 h2d-bytes=855638016 h2d-ms=142.005 pair-GiB/s=5.612 gate-up-wait-ms=0.032 down-wait-ms=0.029
+AffinityWave: PairFold host generation=2 layer=21 pair=0 h2d-bytes=855638016 h2d-ms=134.672 pair-GiB/s=5.917 gate-up-wait-ms=0.004 down-wait-ms=0.007
+AffinityWave: PairFold host generation=2 layer=22 pair=1 h2d-bytes=855638016 h2d-ms=112.729 pair-GiB/s=7.069 gate-up-wait-ms=0.006 down-wait-ms=0.007
+AffinityWave: PairFold host generation=2 layer=23 pair=0 h2d-bytes=855638016 h2d-ms=121.433 pair-GiB/s=6.562 gate-up-wait-ms=0.006 down-wait-ms=0.007
+AffinityWave: PairFold host generation=2 summary layers=8 h2d-bytes=6845104128 serialized-pair-GiB/s=5.844 device-GiB/s=2.378:3.555 gate-up-wait-ms=0.116 down-wait-ms=0.148
+AffinityWave: dense lane mode=service tokens=8128 cells=160 corridors=9922.0 MiB setup=17.965 ms wave=3195.411 ms tail=0.771 ms total=3214.147 ms throughput=2528.8 tok/s; output=logits
+AffinityWave: pinned lane 0 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=47.7 MiB
+AffinityWave: PairFold generation=3 scheduler=pipelined lane-tokens=2032
+AffinityWave: PairFold host generation=3 layer=16 pair=0 h2d-bytes=855638016 h2d-ms=120.911 pair-GiB/s=6.591 gate-up-wait-ms=0.005 down-wait-ms=0.006
+AffinityWave: PairFold host generation=3 layer=17 pair=1 h2d-bytes=855638016 h2d-ms=132.617 pair-GiB/s=6.009 gate-up-wait-ms=0.005 down-wait-ms=0.007
+AffinityWave: PairFold host generation=3 layer=18 pair=0 h2d-bytes=855638016 h2d-ms=167.081 pair-GiB/s=4.769 gate-up-wait-ms=0.034 down-wait-ms=0.033
+AffinityWave: PairFold host generation=3 layer=19 pair=1 h2d-bytes=855638016 h2d-ms=155.545 pair-GiB/s=5.123 gate-up-wait-ms=0.028 down-wait-ms=0.030
+AffinityWave: PairFold host generation=3 layer=20 pair=1 h2d-bytes=855638016 h2d-ms=144.534 pair-GiB/s=5.513 gate-up-wait-ms=0.028 down-wait-ms=0.028
+AffinityWave: PairFold host generation=3 layer=21 pair=0 h2d-bytes=855638016 h2d-ms=134.019 pair-GiB/s=5.946 gate-up-wait-ms=0.006 down-wait-ms=0.007
+AffinityWave: PairFold host generation=3 layer=22 pair=1 h2d-bytes=855638016 h2d-ms=120.634 pair-GiB/s=6.606 gate-up-wait-ms=0.007 down-wait-ms=0.007
+AffinityWave: PairFold host generation=3 layer=23 pair=0 h2d-bytes=855638016 h2d-ms=131.229 pair-GiB/s=6.072 gate-up-wait-ms=0.005 down-wait-ms=0.008
+AffinityWave: PairFold host generation=3 summary layers=8 h2d-bytes=6845104128 serialized-pair-GiB/s=5.761 device-GiB/s=2.385:3.315 gate-up-wait-ms=0.117 down-wait-ms=0.126
+AffinityWave: dense lane mode=service tokens=8128 cells=160 corridors=9922.0 MiB setup=9.477 ms wave=3179.013 ms tail=0.775 ms total=3189.265 ms throughput=2548.5 tok/s; output=logits
+AffinityWave: pinned lane 0 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=47.7 MiB
+AffinityWave: PairFold generation=4 scheduler=pipelined lane-tokens=2032
+AffinityWave: PairFold host generation=4 layer=16 pair=0 h2d-bytes=855638016 h2d-ms=120.131 pair-GiB/s=6.633 gate-up-wait-ms=0.004 down-wait-ms=0.006
+AffinityWave: PairFold host generation=4 layer=17 pair=1 h2d-bytes=855638016 h2d-ms=132.681 pair-GiB/s=6.006 gate-up-wait-ms=0.005 down-wait-ms=0.006
+AffinityWave: PairFold host generation=4 layer=18 pair=0 h2d-bytes=855638016 h2d-ms=165.372 pair-GiB/s=4.819 gate-up-wait-ms=0.029 down-wait-ms=0.030
+AffinityWave: PairFold host generation=4 layer=19 pair=1 h2d-bytes=855638016 h2d-ms=153.499 pair-GiB/s=5.191 gate-up-wait-ms=0.029 down-wait-ms=0.026
+AffinityWave: PairFold host generation=4 layer=20 pair=1 h2d-bytes=855638016 h2d-ms=143.848 pair-GiB/s=5.540 gate-up-wait-ms=0.033 down-wait-ms=0.028
+AffinityWave: PairFold host generation=4 layer=21 pair=0 h2d-bytes=855638016 h2d-ms=133.810 pair-GiB/s=5.955 gate-up-wait-ms=0.008 down-wait-ms=0.006
+AffinityWave: PairFold host generation=4 layer=22 pair=1 h2d-bytes=855638016 h2d-ms=119.862 pair-GiB/s=6.648 gate-up-wait-ms=0.006 down-wait-ms=0.007
+AffinityWave: PairFold host generation=4 layer=23 pair=0 h2d-bytes=855638016 h2d-ms=130.343 pair-GiB/s=6.114 gate-up-wait-ms=0.008 down-wait-ms=0.009
+AffinityWave: PairFold host generation=4 summary layers=8 h2d-bytes=6845104128 serialized-pair-GiB/s=5.798 device-GiB/s=2.409:3.331 gate-up-wait-ms=0.124 down-wait-ms=0.118
+AffinityWave: dense lane mode=service tokens=8128 cells=160 corridors=9922.0 MiB setup=11.533 ms wave=3177.539 ms tail=0.877 ms total=3189.949 ms throughput=2548.0 tok/s; output=logits
+AffinityWave: pinned lane 0 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 1 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 2 inputs=7 bytes=47.7 MiB
+AffinityWave: pinned lane 3 inputs=7 bytes=47.7 MiB
+AffinityWave: PairFold generation=5 scheduler=pipelined lane-tokens=2032
+AffinityWave: PairFold host generation=5 layer=16 pair=0 h2d-bytes=855638016 h2d-ms=120.903 pair-GiB/s=6.591 gate-up-wait-ms=0.006 down-wait-ms=0.006
+AffinityWave: PairFold host generation=5 layer=17 pair=1 h2d-bytes=855638016 h2d-ms=131.828 pair-GiB/s=6.045 gate-up-wait-ms=0.005 down-wait-ms=0.006
+AffinityWave: PairFold host generation=5 layer=18 pair=0 h2d-bytes=855638016 h2d-ms=165.374 pair-GiB/s=4.819 gate-up-wait-ms=0.029 down-wait-ms=0.048
+AffinityWave: PairFold host generation=5 layer=19 pair=1 h2d-bytes=855638016 h2d-ms=155.249 pair-GiB/s=5.133 gate-up-wait-ms=0.041 down-wait-ms=0.042
+AffinityWave: PairFold host generation=5 layer=20 pair=1 h2d-bytes=855638016 h2d-ms=144.615 pair-GiB/s=5.510 gate-up-wait-ms=0.026 down-wait-ms=0.029
+AffinityWave: PairFold host generation=5 layer=21 pair=0 h2d-bytes=855638016 h2d-ms=134.929 pair-GiB/s=5.906 gate-up-wait-ms=0.005 down-wait-ms=0.007
+AffinityWave: PairFold host generation=5 layer=22 pair=1 h2d-bytes=855638016 h2d-ms=110.013 pair-GiB/s=7.243 gate-up-wait-ms=0.008 down-wait-ms=0.005
+AffinityWave: PairFold host generation=5 layer=23 pair=0 h2d-bytes=855638016 h2d-ms=120.909 pair-GiB/s=6.591 gate-up-wait-ms=0.007 down-wait-ms=0.007
+AffinityWave: PairFold host generation=5 summary layers=8 h2d-bytes=6845104128 serialized-pair-GiB/s=5.882 device-GiB/s=2.409:3.641 gate-up-wait-ms=0.127 down-wait-ms=0.150
+AffinityWave: dense lane mode=service tokens=8128 cells=160 corridors=9922.0 MiB setup=11.632 ms wave=3197.598 ms tail=0.768 ms total=3209.998 ms throughput=2532.1 tok/s; output=logits

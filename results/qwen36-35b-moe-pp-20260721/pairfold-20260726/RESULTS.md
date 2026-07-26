@@ -209,3 +209,97 @@ The checkpoint commit includes source, tests, harnesses, this result record,
 and selected small text evidence. Generated logits, binary service dumps,
 and Nsight databases remain local. No push or PR is part of the checkpoint
 procedure.
+
+## Host-resident expert-streaming proof of concept
+
+A subsequent default-off proof streams the raw Q8 T64 expert weights for
+layers 16 through 23 from pinned host snapshots into two 408 MiB slots per
+GPU. It is byte-exact at c512. The accepted saved-logits SHA-256 remains:
+
+`47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5`
+
+The warm pp8128 median is 3247.809 ms / 2502.61 tok/s, versus 3040.948 ms /
+2672.85 tok/s for a same-binary resident PairFold control. Eight streamed
+layers therefore add 206.861 ms or 6.802% wall time. Ready-event waits total
+only about 0.24 ms per warm generation, so the penalty is transfer/compute
+contention rather than late weights.
+
+A pp2048 trace measures 6.375 GiB of host-weight copies in a 689.645 ms
+all-device union. 54.567% of that union overlaps SM work. The current proof
+retains the original resident weights and therefore adds about 828 MiB at
+the worst GPU high-water rather than reclaiming memory. Loader-time host
+placement would theoretically net 7.171875 GiB/GPU for all 40 Q8 layers
+after retaining two slots.
+
+The implementation, measurements, trace analysis, memory accounting, and
+approximately 1994.5 tok/s full-Q8 first-order estimate are documented in
+`HOST-STREAMING.md`. The path remains default-off and experimental.
+
+## Loader-time host-placement follow-up
+
+PairWave expert projections for layers 16 through 23 can now be allocated in
+CUDA-pinned host memory at load time instead of receiving device-resident
+model allocations. The loader preserves the four-way expert split and exact
+PairWave permutation, CPU-packs each physical projection to T64 in place,
+and supplies those buffers directly to the existing two-slot streamer.
+There is no D2H snapshot.
+
+The loader-host c512 run reports PPL 4.0783 and the accepted saved-logits
+SHA-256:
+
+`47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5`
+
+Relative to the preceding resident control, the final PairWave memory
+checkpoint recovers 843,055,104 bytes (804 MiB, 0.785156 GiB) on every GPU.
+The loader arm includes both allocated streaming slots. The proof therefore
+demonstrates actual VRAM recovery, while its eight-layer window remains about
+15.2 MiB short of a literal 0.8 GiB/GPU gate.
+
+The five warm pp8128 walls are 3276.769, 3373.924, 3289.595, 3273.122, and
+3355.532 ms. Their median is 3289.595 ms / 2470.821 tok/s. This is 1.287%
+slower in wall time than the prior shadow-source stream, 8.177% slower than
+the preceding resident PairFold control, and 15.158% below the production
+throughput comparator.
+
+The feature remains default-off and experimental. The full record is in
+`LOADER-HOST-PLACEMENT.md`.
+
+## All-40 loader placement
+
+The loader-host range was expanded to all PairFold inference layers,
+`blk.0` through `blk.39`. The model's MTP `blk.40` remains outside the
+PairFold inference schedule. The loader registers 240 physical projections
+and 34,225,520,640 pinned host bytes, with `snapshot-ms=0.000`.
+
+The all-40 c512 run reports PPL 4.0783 and the accepted saved-logits
+SHA-256:
+
+`47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5`
+
+The final c512 used-memory values are 3,486,187,520 / 3,427,598,336 /
+3,855,417,344 / 3,855,417,344 bytes. The final pp8128 values are
+5,782,568,960 / 5,723,979,776 / 6,151,798,784 / 6,151,798,784 bytes.
+Both shapes recover exactly 7,633,633,280 bytes (7,280 MiB, 7.109375 GiB)
+per GPU relative to their preceding resident controls.
+
+The all-40 warm pp8128 walls are 4222.524, 4213.449, 4238.061, 4246.818,
+and 4239.941 ms after discarding initialization. The median is
+4238.061 ms / 1917.858 tok/s and peak-to-peak spread is 0.788% of the warm
+mean. Relative to the current warm resident PairFold result, all-40
+streaming adds 1211.023 ms or 40.007% wall time and reduces throughput by
+28.575%. It is 34.145% below the production throughput comparator.
+
+Each warm generation moves 34,225,520,640 bytes. The reported
+serialized-pair transfer-rate median is 5.632 GiB/s, and summed ready-event
+waits are 65.897-70.331 ms per generation. The earlier 4075.253 ms
+bytes-linear estimate was 3.995% faster than the measured result.
+
+The pp8128 process took approximately 300 seconds end to end; the six timed
+samples account for 26.898 seconds. Model load, initialization, and teardown
+therefore consumed approximately 273 seconds, including 66.285 seconds of
+CPU T64 packing.
+
+The host-capacity proof succeeds but has little operating margin. Read-only
+samples saw available memory fall to approximately 5.4 GiB, and the
+machine's 8 GiB swap became effectively full. The path remains default-off.
+Artifacts and full accounting are in `LOADER-HOST-PLACEMENT.md`.

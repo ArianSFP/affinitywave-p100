@@ -80,6 +80,11 @@ struct llama_model_loader {
     bool check_tensors;
     bool no_alloc;
 
+    bool pairfold_host_placement = false;
+    int  pairfold_host_first_layer = 16;
+    int  pairfold_host_last_layer  = 23;
+    int  pairfold_host_placement_tensors = 0;
+
     llama_files files;
     llama_ftype ftype;
     llama_fver  fver;

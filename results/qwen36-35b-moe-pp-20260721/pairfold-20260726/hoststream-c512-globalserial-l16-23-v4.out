@@ -1,0 +1,5 @@
+RUN START mode=pipeline-ppl tokens=512 2026-07-26 17:08:16 UTC
+0.12 minutes
+[1]4.0783,
+
+RUN END mode=pipeline-ppl status=0 2026-07-26 17:09:56 UTC

@@ -47,8 +47,9 @@ memory topology. PairWave tests a second architecture:
 The immediate result is slower than production, but it establishes a
 working pair-local runtime. The longer-term motivation is host-resident
 expert streaming: while one pair computes, the other pair can load a future
-layer into bounded device slots. That streaming path is not implemented in
-this checkpoint.
+layer into bounded device slots. That path was implemented and measured in
+the follow-up
+[PairFold host-streaming checkpoint](PAIRFOLD-HOST-STREAMING.md).
 
 ## Placement and prompt geometry
 
@@ -338,11 +339,12 @@ The shortest credible route toward the production wall is:
    pooling and `2xM32`/`2xM16` experiments;
 5. repeat c512 exactness, paired KLD/PPL, and randomized warm pp8128 gates.
 
-## Host-resident expert streaming direction
+## Preimplementation host-streaming estimate
 
-No host-resident weight streaming code is included here. The checkpoint is
-intended to be the arithmetic and scheduler oracle for that next
-experiment.
+The parent `a7c878670` checkpoint did not contain host-resident weight
+streaming. This section preserves the estimate and staged proof plan that
+were used to build the follow-up implementation. The measured result is in
+[PAIRFOLD-HOST-STREAMING.md](PAIRFOLD-HOST-STREAMING.md).
 
 For the current Q8_0 geometry:
 
@@ -387,6 +389,10 @@ The proposed proof of concept is prefill-only:
 Whole-layer streaming is unsuitable for decode without a separate resident
 or hot expert cache. Once weights are actually evicted, decode must not
 silently fall back to a path whose weights are absent.
+
+The follow-up completed the shadow proof, loader-time eviction, and all-40
+expansion. The measured all-40 result recovers 7.109375 GiB/GPU and reaches
+1917.858 tok/s at warm pp8128. It remains prefill-only and fail-closed.
 
 ## Build and validation
 

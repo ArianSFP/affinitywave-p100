@@ -1701,6 +1701,9 @@ static bool ggml_backend_buft_is_cuda_host(ggml_backend_buffer_type_t buft) {
 }
 
 static void ggml_backend_cuda_host_buffer_free_buffer(ggml_backend_buffer_t buffer) {
+    ggml_cuda_affinity_wave_forget_range(
+            buffer->context,
+            ggml_backend_buffer_get_size(buffer));
     CUDA_CHECK(cudaFreeHost(buffer->context));
 }
 
@@ -1710,7 +1713,14 @@ static void * ggml_cuda_host_malloc(size_t size) {
     }
 
     void * ptr = nullptr;
-    cudaError_t err = cudaMallocHost((void **) &ptr, size);
+    const char * pairfold_host_placement =
+            getenv("GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT");
+    const unsigned int flags =
+            pairfold_host_placement != nullptr &&
+                    strcmp(pairfold_host_placement, "1") == 0 ?
+                cudaHostAllocPortable : cudaHostAllocDefault;
+    cudaError_t err = cudaHostAlloc(
+            (void **) &ptr, size, flags);
     if (err != cudaSuccess) {
         // clear the error
         (void)cudaGetLastError();
@@ -4639,6 +4649,27 @@ static int ggml_backend_cuda_affinity_wave_pairfold_service(
     return 0;
 }
 
+static int ggml_backend_cuda_affinity_wave_pairfold_host_weights_prefetch(
+        int32_t generation,
+        int32_t layer,
+        int32_t panel,
+        int32_t * slot,
+        char * error,
+        size_t error_capacity) {
+    return ggml_cuda_affinity_wave_pairfold_host_weights_prefetch(
+            generation, layer, panel, slot,
+            error, error_capacity);
+}
+
+static int ggml_backend_cuda_affinity_wave_pairfold_register_host_tensor(
+        ggml_tensor * tensor,
+        int32_t logical_device,
+        char * error,
+        size_t error_capacity) {
+    return ggml_cuda_affinity_wave_pairfold_register_host_tensor(
+            tensor, logical_device, error, error_capacity);
+}
+
 static int ggml_backend_cuda_affinity_wave_pairfold_generation(
         ggml_backend_t const * backends,
         int32_t generation,
@@ -4653,6 +4684,11 @@ static int ggml_backend_cuda_affinity_wave_pairfold_generation(
     }
     if (ggml_backend_cuda_aw_pairfold_ensure(
                 backends, tokens, error,
+                error_capacity) != 0) {
+        return 1;
+    }
+    if (ggml_cuda_affinity_wave_pairfold_host_weights_generation(
+                generation, action, error,
                 error_capacity) != 0) {
         return 1;
     }
@@ -7975,6 +8011,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_service") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_pairfold_service;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_host_weights_prefetch") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_host_weights_prefetch;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_register_host_tensor") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_pairfold_register_host_tensor;
     }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_pairfold_generation") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_pairfold_generation;

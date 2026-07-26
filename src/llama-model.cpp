@@ -1283,6 +1283,29 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const int n_layer_all = hparams.n_layer_all;
     const int n_gpu_layers = this->n_gpu_layers();
 
+    if (ml.pairfold_host_placement) {
+        if (split_mode != LLAMA_SPLIT_MODE_TENSOR ||
+                devices.size() != 1 ||
+                get_split_state_ud.n_devices != 4 ||
+                ggml_backend_dev_type(devices.front().dev) !=
+                    GGML_BACKEND_DEVICE_TYPE_META ||
+                hparams.n_layer() != 40 ||
+                hparams.n_expert != 256 ||
+                n_gpu_layers < n_layer_all + 1) {
+            throw std::runtime_error(format(
+                    "PairFold host placement requires the qualified fully-offloaded four-GPU Qwen MoE model "
+                    "(split=%d devices=%zu meta-devices=%zu device-type=%d layers=%d model-layers=%d experts=%d gpu-layers=%d)",
+                    (int) split_mode, devices.size(),
+                    get_split_state_ud.n_devices,
+                    devices.empty() ? -1 :
+                        (int) ggml_backend_dev_type(
+                            devices.front().dev),
+                    n_layer_all, hparams.n_layer(),
+                    hparams.n_expert,
+                    n_gpu_layers));
+        }
+    }
+
     const bool use_mmap_buffer = true;
 
     this->ml = &ml; // to be used by create_tensor() and load_arch_tensors()
@@ -1537,6 +1560,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
     ml.done_getting_tensors();
+    if (ml.pairfold_host_placement) {
+        const int expected =
+                (ml.pairfold_host_last_layer -
+                 ml.pairfold_host_first_layer + 1)*3;
+        if (ml.pairfold_host_placement_tensors != expected) {
+            throw std::runtime_error(format(
+                    "PairFold host placement selected %d expert tensors, expected %d",
+                    ml.pairfold_host_placement_tensors, expected));
+        }
+        LLAMA_LOG_INFO("%s: placed %d PairFold expert tensors in pinned host buffers\n",
+                __func__, ml.pairfold_host_placement_tensors);
+    }
 
     // Tied NVFP4 output is valid when no separate LM-head scale tensors are present.
     // If sidecar scales exist, the output weight must be an actual output tensor.

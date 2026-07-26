@@ -1,0 +1,40 @@
+PairFold all-40 host-memory monitor
+Date: 2026-07-26
+
+These are read-only, system-wide free(1) samples taken alongside the guarded
+benchmark. They are not synchronized process RSS measurements or an exact
+high-water mark.
+
+Preflight, before c512:
+  MemTotal:      49,330,724,864 bytes
+  MemAvailable:  41,471,455,232 bytes
+  SwapTotal:      8,589,930,496 bytes
+  SwapUsed:       5,457,526,784 bytes
+  SwapFree:       3,132,403,712 bytes
+
+c512, early allocation/packing sample:
+  Mem: 45 GiB total, 40 GiB used, 1.2 GiB free, 5.4 GiB available
+  Swap: 8.0 GiB total, 6.2 GiB used, 1.8 GiB free
+
+c512, later packing sample:
+  Mem: 45 GiB total, 39 GiB used, 2.2 GiB free, 6.1 GiB available
+  Swap: 8.0 GiB total, 6.9 GiB used, 1.1 GiB free
+
+pp8128, early packing sample:
+  Mem: 45 GiB total, 38 GiB used, 5.6 GiB free, 7.4 GiB available
+  Swap: 8.0 GiB total, 7.9 GiB used, 56 MiB free
+
+pp8128, layer-15 packing sample:
+  Mem: 45 GiB total, 38 GiB used, 7.0 GiB free, 7.2 GiB available
+  Swap: 8.0 GiB total, 8.0 GiB used, 1.6 MiB free
+
+After pp8128 process exit:
+  MemTotal:      49,330,724,864 bytes
+  MemAvailable:  44,646,473,728 bytes
+  SwapTotal:      8,589,930,496 bytes
+  SwapUsed:       8,550,309,888 bytes
+  SwapFree:          39,620,608 bytes
+
+The lowest sampled MemAvailable value was approximately 5.4 GiB. The second
+process left swap effectively full. The benchmark and xsession watchdog did
+not trip.

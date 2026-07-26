@@ -181,8 +181,11 @@ bench/run-pairfold.sh
 It contains the production environment, `/tmp/affinitywave-4gpu.lock`,
 process exclusion, CPU taskset, timeout, and `.xsession-errors` watchdog.
 Its `ROOT`, `BUILD`, `REFERENCE`, `MODEL`, and `CORPUS` constants are
-absolute original-rig paths. Adapt them before using the script elsewhere.
-The referenced EPLB and AffinityWave placement files are external
+absolute original-rig paths. Its `MANIFEST`, `XS`, `HOME`, CUDA paths,
+library paths, visible devices, and CPU list are also rig-specific. Adapt
+all of them before using the script elsewhere. The watchdog truncates the
+configured `XS` file and SIGKILLs matching `/bin/llama-` processes on a
+trip. The referenced EPLB and AffinityWave placement files are external
 machine-specific runtime inputs.
 
 Run the CPU scheduler test first:
@@ -216,3 +219,50 @@ not use llama-bench's aggregate because it includes cold initialization.
 
 The measured checkpoint and its limitations are in
 [PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md).
+
+## PairFold host streaming
+
+The host-streaming extension adds:
+
+```text
+GGML_CUDA_AW_PAIRFOLD_HOST_WEIGHTS=1
+GGML_CUDA_AW_PAIRFOLD_HOST_PLACEMENT=1
+GGML_CUDA_AW_PAIRFOLD_HOST_LAYERS=FIRST:LAST
+```
+
+Qualify a small loader-host window before attempting all 40 layers:
+
+```bash
+env \
+  PAIRFOLD_HOST_WEIGHTS=1 \
+  PAIRFOLD_HOST_PLACEMENT=1 \
+  PAIRFOLD_HOST_LAYERS=16:23 \
+  bash bench/run-pairfold.sh \
+    pipeline-ppl 512 loaderhost-c512
+```
+
+The expected saved-logits SHA-256 is:
+
+`47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5`
+
+Exact execution is not self-contained from this repository alone. The Q8_0
+model, `placement-primary.eplb`, and `placement-hot16.json` are excluded.
+Their exact hashes and the original-rig adaptation procedure are recorded in
+[PAIRFOLD-HOST-STREAMING.md](PAIRFOLD-HOST-STREAMING.md).
+
+The all-40 path requires 31.875 GiB of pinned expert storage. Measure host
+headroom and stop other memory-heavy workloads first:
+
+```bash
+env \
+  PAIRFOLD_HOST_WEIGHTS=1 \
+  PAIRFOLD_HOST_PLACEMENT=1 \
+  PAIRFOLD_HOST_LAYERS=0:39 \
+  PAIRFOLD_REPS=6 \
+  bash bench/run-pairfold.sh \
+    pipeline 8128 loaderhost-all40-pp8128
+```
+
+Discard sample 0 and take the median of samples 1 through 5. Complete
+architecture, safety, exactness, capacity, and reproduction details are in
+[PAIRFOLD-HOST-STREAMING.md](PAIRFOLD-HOST-STREAMING.md).

@@ -1,0 +1,54 @@
+RUN START mode=trace tokens=2048 2026-07-26 17:55:22 UTC
+[
+  {
+    "build_commit": "a7c878670",
+    "build_number": 9876,
+    "cpu_info": "Intel(R) Xeon(R) CPU E5-2650 v4 @ 2.20GHz",
+    "gpu_info": "Tesla P100-PCIE-16GB, Tesla P100-PCIE-16GB, Tesla P100-PCIE-16GB, Tesla P100-PCIE-16GB",
+    "backends": "CUDA",
+    "model_filename": "/home/arian/models/qwen3.6-35b-a3b/Qwen3.6-35B-A3B-Q8_0.gguf",
+    "model_type": "qwen35moe 35B.A3B Q8_0",
+    "model_size": 37790106112,
+    "model_n_params": 35505251456,
+    "n_batch": 2048,
+    "n_ubatch": 2048,
+    "n_threads": 12,
+    "cpu_mask": "0x0",
+    "cpu_strict": false,
+    "poll": 50,
+    "type_k": "f16",
+    "type_v": "f16",
+    "n_gpu_layers": 99,
+    "n_cpu_moe": 0,
+    "split_mode": "tensor",
+    "main_gpu": 0,
+    "no_kv_offload": false,
+    "flash_attn": 1,
+    "devices": "auto",
+    "tensor_split": "0.00",
+    "tensor_buft_overrides": "none",
+    "use_mmap": false,
+    "use_direct_io": false,
+    "embeddings": false,
+    "no_op_offload": 0,
+    "no_host": false,
+    "fit_target": 0,
+    "fit_min_ctx": 0,
+    "n_prompt": 2048,
+    "n_gen": 0,
+    "n_depth": 0,
+    "test_time": "2026-07-26T17:56:52Z",
+    "avg_ns": 4882415728,
+    "stddev_ns": 2471172562,
+    "avg_ts": 864.887011,
+    "stddev_ts": 877.770081,
+    "samples_ns": [ 8386230642, 1378600815 ],
+    "samples_ts": [ 244.21, 1485.56 ]
+  }
+]
+Collecting data...
+Generating '/tmp/nsys-report-315b.qdstrm'
+[1/1] [0%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [0%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [0%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [5%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [5%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=17%                        ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [14%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [12%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [11%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [10%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=17%                        ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=16%                        ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [14%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [13%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [12%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [11%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [10%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [9%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [8%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [7%                          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [11%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [14%                         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=17%                        ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [==21%                       ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [===24%                      ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [====27%                     ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=====30%                    ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [======34%                   ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=======37%                  ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [========40%                 ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=========44%                ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [==========47%               ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [===========50%              ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [============54%             ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [============57%             ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [==============61%           ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [==============64%           ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [===============67%          ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [================70%         ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [=================74%        ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [==================77%       ] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [========================100%] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep[1/1] [========================100%] hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep
+Generated:
+    /home/arian/llama.cpp-q36-moe/.worktrees/paircache-20260726/results/qwen36-35b-moe-pp-20260721/pairfold-20260726/hoststream-final-default-trace-pp2048-l16-23-v5.nsys-rep
+RUN END mode=trace status=0 2026-07-26 17:57:11 UTC

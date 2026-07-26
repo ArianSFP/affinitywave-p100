@@ -35,6 +35,13 @@ versus 2788.594 ms / 2914.731 tok/s for its same-build diagonal control.
 PairFold is therefore a measured experimental architecture, but it is not
 production-qualified.
 
+The follow-up host-streaming checkpoint keeps exact Q8_0 expert shards in
+pinned host memory and uses two bounded device slots per GPU. Loader-time
+placement is byte-identical at c512. With all 40 PairFold inference layers
+host-resident, it recovers 7.109375 GiB/GPU and measures
+4238.061 ms / 1917.858 tok/s at warm pp8128. This path is also default-off
+and experimental.
+
 An important naming distinction:
 
 - PairWave is an exact two-GPU-pair placement, loader, and service primitive.
@@ -44,6 +51,8 @@ An important naming distinction:
   scheduler rate.
 - PairFold is the implemented 80-task pair-local scheduler built on
   PairWave. Its measured warm rate is 2685.133 tok/s.
+- PairFold host streaming is the implemented loader-placement extension. Its
+  all-40 warm rate is 1917.858 tok/s and is not a production rate.
 - StitchRail scheduling, InterferenceWave, and PairCache remain replay-only,
   paused, rejected, or otherwise not production-qualified.
 
@@ -53,15 +62,18 @@ Do not quote replay rates as production results.
 
 1. [PAIRFOLD-CHECKPOINT.md](PAIRFOLD-CHECKPOINT.md) - the implemented
    pair-local runtime, accurate warm result, prior attempts, and next work.
-2. [RESULTS.md](RESULTS.md) - what is qualified and what is only modeled.
-3. [ARCHITECTURE.md](ARCHITECTURE.md) - data flow, ownership, exactness, and
+2. [PAIRFOLD-HOST-STREAMING.md](PAIRFOLD-HOST-STREAMING.md) - loader-time
+   host placement, two-slot streaming, exactness, memory, performance, and
+   reproduction.
+3. [RESULTS.md](RESULTS.md) - what is qualified and what is only modeled.
+4. [ARCHITECTURE.md](ARCHITECTURE.md) - data flow, ownership, exactness, and
    component boundaries.
-4. [EXPERIMENT-LEDGER.md](EXPERIMENT-LEDGER.md) - retained, rejected, and
+5. [EXPERIMENT-LEDGER.md](EXPERIMENT-LEDGER.md) - retained, rejected, and
    paused experiments.
-5. [REPRODUCING.md](REPRODUCING.md) - build and qualification procedure.
-6. [ARTIFACTS.md](ARTIFACTS.md) - evidence layout, hashes, and omitted bulky
+6. [REPRODUCING.md](REPRODUCING.md) - build and qualification procedure.
+7. [ARTIFACTS.md](ARTIFACTS.md) - evidence layout, hashes, and omitted bulky
    files.
-7. [../backend/AFFINITY_WAVE.md](../backend/AFFINITY_WAVE.md) - runtime
+8. [../backend/AFFINITY_WAVE.md](../backend/AFFINITY_WAVE.md) - runtime
    controls already shipped with the checkpoint.
 
 The full historical notebooks are preserved as an ASCII-normalized archive:

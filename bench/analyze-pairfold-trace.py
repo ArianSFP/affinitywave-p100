@@ -8,7 +8,8 @@ import sqlite3
 
 
 TASK = re.compile(
-    r"pairfold/gen=\d+/layer=\d+/panel=\d+/pair=(\d+)$")
+    r"pairfold/gen=(\d+)/layer=\d+/panel=\d+/pair=(\d+)$")
+HOST_WEIGHT_COPY_BYTES = 427_819_008
 
 
 def merge(intervals):
@@ -66,12 +67,16 @@ def milliseconds(value):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--generation", type=int)
     parser.add_argument("sqlite")
     args = parser.parse_args()
+    if args.generation is not None and args.generation < 0:
+        parser.error("--generation must be non-negative")
 
     connection = sqlite3.connect(args.sqlite)
     strings = dict(connection.execute(
         "select id, value from StringIds"))
+    all_tasks = []
     tasks = []
     pair_tasks = {0: [], 1: []}
     for start, end, text, text_id in connection.execute(
@@ -80,24 +85,45 @@ def main():
         match = TASK.fullmatch(text or "")
         if match is None or end is None:
             continue
+        generation = int(match.group(1))
+        all_tasks.append((generation, start, end))
+        if (args.generation is not None and
+                generation != args.generation):
+            continue
         tasks.append((start, end))
-        pair_tasks[int(match.group(1))].append((start, end))
+        pair_tasks[int(match.group(2))].append((start, end))
     if len(tasks) != 80:
-        raise SystemExit(f"expected 80 PairFold tasks, found {len(tasks)}")
+        suffix = (
+            f" for generation {args.generation}"
+            if args.generation is not None else "")
+        raise SystemExit(
+            f"expected 80 PairFold tasks{suffix}, found {len(tasks)}")
 
     begin = min(start for start, _ in tasks)
     host_end = max(end for _, end in tasks)
+    next_begin = None
+    if args.generation is not None:
+        later_starts = [
+            start for generation, start, _ in all_tasks
+            if generation != args.generation and start > begin]
+        if later_starts:
+            next_begin = min(later_starts)
     marker_ids = [
         identifier for identifier, value in strings.items()
         if "ggml_cuda_aw_pairfold_terminal_marker" in value]
     marker_ends = []
     if marker_ids:
         placeholders = ",".join("?" for _ in marker_ids)
+        query = (
+            "select end from CUPTI_ACTIVITY_KIND_KERNEL "
+            f"where demangledName in ({placeholders}) and start >= ?")
+        parameters = (*marker_ids, begin)
+        if next_begin is not None:
+            query += " and start < ?"
+            parameters += (next_begin,)
         marker_ends = [
             end for end, in connection.execute(
-                "select end from CUPTI_ACTIVITY_KIND_KERNEL "
-                f"where demangledName in ({placeholders}) and start >= ?",
-                (*marker_ids, begin))]
+                query, parameters)]
     if marker_ends and len(marker_ends) != 4:
         raise SystemExit(
             f"expected four PairFold terminal markers, found {len(marker_ends)}")
@@ -168,6 +194,9 @@ def main():
 
     raw_copies = {device: [] for device in range(4)}
     copy_bytes = collections.Counter()
+    host_weight_copies = {device: [] for device in range(4)}
+    host_weight_copy_bytes = collections.Counter()
+    host_weight_copy_counts = collections.Counter()
     for start, end, device, byte_count in connection.execute(
             "select start, end, deviceId, bytes "
             "from CUPTI_ACTIVITY_KIND_MEMCPY "
@@ -175,9 +204,13 @@ def main():
             (begin, trace_end)):
         if device not in raw_copies:
             continue
-        raw_copies[device].append((
-            max(start, begin), min(end, trace_end)))
+        interval = (max(start, begin), min(end, trace_end))
+        raw_copies[device].append(interval)
         copy_bytes[device] += byte_count
+        if byte_count == HOST_WEIGHT_COPY_BYTES:
+            host_weight_copies[device].append(interval)
+            host_weight_copy_bytes[device] += byte_count
+            host_weight_copy_counts[device] += 1
     copy_union = {
         device: merge(raw_copies[device])
         for device in range(4)
@@ -191,6 +224,16 @@ def main():
     copy_time = duration(all_copies)
     exposed_copy = copy_time - intersection_duration(
         all_copies, all_kernels)
+    all_host_weight_copies = merge([
+        interval for intervals in host_weight_copies.values()
+        for interval in intervals])
+    host_weight_copy_time = duration(all_host_weight_copies)
+    host_weight_copy_overlap = intersection_duration(
+        all_host_weight_copies, all_kernels)
+    host_weight_copy_exposed = (
+        host_weight_copy_time - host_weight_copy_overlap)
+    host_weight_copy_count = active_histogram(
+        list(host_weight_copies.values()), begin, trace_end)
 
     result = {
         "task_count": len(tasks),
@@ -222,6 +265,38 @@ def main():
                 100.0*exposed_copy/copy_time, 3)
                 if copy_time != 0 else 0.0,
         },
+        "host_weight_copy": {
+            "record_bytes": HOST_WEIGHT_COPY_BYTES,
+            "count": sum(host_weight_copy_counts.values()),
+            "bytes": sum(host_weight_copy_bytes.values()),
+            "union_ms": milliseconds(host_weight_copy_time),
+            "overlap_any_sm_ms": milliseconds(
+                host_weight_copy_overlap),
+            "overlap_any_sm_percent": round(
+                100.0*host_weight_copy_overlap/
+                host_weight_copy_time, 3)
+                if host_weight_copy_time != 0 else 0.0,
+            "outside_all_sm_work_ms": milliseconds(
+                host_weight_copy_exposed),
+            "outside_all_sm_work_percent": round(
+                100.0*host_weight_copy_exposed/
+                host_weight_copy_time, 3)
+                if host_weight_copy_time != 0 else 0.0,
+            "device": {
+                str(device): {
+                    "count": host_weight_copy_counts[device],
+                    "bytes": host_weight_copy_bytes[device],
+                    "duration_ms": milliseconds(duration(
+                        host_weight_copies[device])),
+                }
+                for device in range(4)
+            },
+            "time_by_active_copy_count_ms": {
+                str(count): milliseconds(
+                    host_weight_copy_count[count])
+                for count in range(5)
+            },
+        },
         "kernels": {
             "peer_named_count": sum(
                 count for name, count in kernel_names.items()
@@ -231,6 +306,8 @@ def main():
                 if "aw_pair_sum_groups_local_panel_p100" in name),
         },
     }
+    if args.generation is not None:
+        result["generation"] = args.generation
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

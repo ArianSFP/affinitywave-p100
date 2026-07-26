@@ -1,0 +1,109 @@
+{
+  "copy": {
+    "bytes": 15070101984,
+    "exposed_percent_of_copy_union": 41.064,
+    "outside_all_sm_work_ms": 357.49468,
+    "union_ms": 870.572194
+  },
+  "generation": 1,
+  "gpu": {
+    "0": {
+      "busy_ms": 618.859682,
+      "busy_percent": 46.593,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 709.356768,
+      "same_gpu_sm_overlap_ms": 0.291007
+    },
+    "1": {
+      "busy_ms": 614.512447,
+      "busy_percent": 46.266,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 713.704003,
+      "same_gpu_sm_overlap_ms": 0.375068
+    },
+    "2": {
+      "busy_ms": 615.375826,
+      "busy_percent": 46.331,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 712.840624,
+      "same_gpu_sm_overlap_ms": 0.351867
+    },
+    "3": {
+      "busy_ms": 619.360286,
+      "busy_percent": 46.631,
+      "cross_stream_sm_overlap_ms": 0.0,
+      "idle_ms": 708.856164,
+      "same_gpu_sm_overlap_ms": 0.372445
+    }
+  },
+  "host_task_time_by_active_pair_count_ms": {
+    "0": 0.38326,
+    "1": 949.079363,
+    "2": 264.607808
+  },
+  "host_weight_copy": {
+    "bytes": 6845104128,
+    "count": 16,
+    "device": {
+      "0": {
+        "bytes": 1711276032,
+        "count": 4,
+        "duration_ms": 637.470534
+      },
+      "1": {
+        "bytes": 1711276032,
+        "count": 4,
+        "duration_ms": 635.212614
+      },
+      "2": {
+        "bytes": 1711276032,
+        "count": 4,
+        "duration_ms": 636.938031
+      },
+      "3": {
+        "bytes": 1711276032,
+        "count": 4,
+        "duration_ms": 635.008686
+      }
+    },
+    "outside_all_sm_work_ms": 313.328943,
+    "outside_all_sm_work_percent": 45.433,
+    "overlap_any_sm_ms": 376.315739,
+    "overlap_any_sm_percent": 54.567,
+    "record_bytes": 427819008,
+    "time_by_active_copy_count_ms": {
+      "0": 638.571768,
+      "1": 0.75017,
+      "2": 103.655496,
+      "3": 4.387361,
+      "4": 580.851655
+    },
+    "union_ms": 689.644682
+  },
+  "kernels": {
+    "pairfold_local_sum_count": 640,
+    "peer_named_count": 0
+  },
+  "pair": {
+    "0": {
+      "busy_ms": 709.501652
+    },
+    "1": {
+      "busy_ms": 722.525371
+    }
+  },
+  "task_count": 80,
+  "time_by_active_gpu_count_ms": {
+    "0": 365.228135,
+    "1": 183.544893,
+    "2": 351.386488,
+    "3": 130.437364,
+    "4": 297.61957
+  },
+  "time_by_active_pair_count_ms": {
+    "0": 365.228135,
+    "1": 493.949607,
+    "2": 469.038708
+  },
+  "window_ms": 1328.21645
+}

@@ -60,6 +60,8 @@ struct ggml_cuda_aw_live_cell {
     int32_t       home_device;
     int32_t       tokens;
     int32_t       reserved;
+    int32_t       weight_generation;
+    int32_t       weight_slot;
     size_t        ids_stride;
     size_t        weights_stride;
     const float * input;
@@ -156,6 +158,26 @@ int ggml_cuda_affinity_wave_pairfold_service(
         void * const * streams,
         const ggml_cuda_aw_live_cell * cells,
         int32_t n_cells,
+        char * error,
+        size_t error_capacity);
+
+int ggml_cuda_affinity_wave_pairfold_host_weights_generation(
+        int32_t generation,
+        int32_t action,
+        char * error,
+        size_t error_capacity);
+
+int ggml_cuda_affinity_wave_pairfold_host_weights_prefetch(
+        int32_t generation,
+        int32_t layer,
+        int32_t panel,
+        int32_t * slot,
+        char * error,
+        size_t error_capacity);
+
+int ggml_cuda_affinity_wave_pairfold_register_host_tensor(
+        ggml_tensor * tensor,
+        int32_t logical_device,
         char * error,
         size_t error_capacity);
 
