@@ -1,0 +1,742 @@
+{
+  "schema": "affinitywave.headfold.replay.v5",
+  "source_analysis": "results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/broadwave-live-pp8128.analysis.json",
+  "source_cache_model": "results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/cache-relay-model-frequency-v1.json",
+  "source_window_ms": 3187.830587,
+  "calibration": {
+    "dense_factor": 0.906,
+    "current_qkv_ms_per_recurrent_layer": 9.116375,
+    "headfold_qkv_pipeline_ms": 9.281471,
+    "headfold_z_panel_ms": 4.373397,
+    "headfold_z_monolithic_exact_ms": 4.174944,
+    "headfold_scalar_transport_ms": 0.137219,
+    "headfold_gdn_dependency_penalty_ms": 0.33567199999999975,
+    "headfold_gdn_segmented_ms": 7.427343,
+    "headfold_gdn_output_exposed_ms": 0.763962,
+    "headfold_gdn_pipeline_ms": 8.191305,
+    "exact_attention_ms": 34.664322999999996,
+    "attention_token_imbalance": 1.0236220472440944,
+    "r16_stream_exposed_long_ms": 0.026688,
+    "r16_stream_exposed_short_ms": 4.189514,
+    "r32_stream_exposed_full_pre_ms": 0.000605,
+    "r44_stream_exposed_full_pre_ms": 0.042677,
+    "r44_stream_exposed_conservative_ms": 0.5,
+    "r0_q8_model_ms": 937.4568400770713,
+    "r0_communication_model_ms": 308.0919884536082,
+    "r16_q8_model_ms": 803.6348362235068,
+    "r16_communication_model_ms": 163.52137896907217,
+    "r32_q8_model_ms": 744.8061849710982,
+    "r32_communication_model_ms": 99.58768164948454,
+    "r44_q8_model_ms": 723.1627360308286,
+    "r44_communication_model_ms": 70.14280577319587,
+    "q8_tile_ms_m64_m32_m16": [
+      0.05766554137,
+      0.03890387556,
+      0.02571714877
+    ],
+    "q8_tile_calibration": 1.0767919357578113,
+    "r44_tail_corrected_q8_model_ms": 749.770117513117,
+    "current_exact_q8_tflops": 5.776,
+    "p100_fp32_peak_tflops": 9.3,
+    "p100_fp16_peak_tflops": 18.7,
+    "r16_replica_bytes_if_persistent": 2139095040,
+    "ephemeral_r16_active_bytes": 53477376,
+    "ephemeral_r16_double_buffer_bytes": 106954752,
+    "ephemeral_r32_active_bytes": 106954752,
+    "ephemeral_r32_double_buffer_bytes": 213909504,
+    "ephemeral_r44_active_bytes": 147062784,
+    "ephemeral_r44_double_buffer_bytes": 294125568,
+    "headfold_qkv_minimal_scratch_bytes": 58261504,
+    "headfold_attention_scratch_bytes": 33685504,
+    "r44_conservative_peak_ephemeral_bytes": 352387072
+  },
+  "scenarios": {
+    "central_r0": {
+      "name": "HeadFold R0 central",
+      "parameters": {
+        "attention_residual": "balanced",
+        "attention_service_imbalance": false,
+        "stream_exposure_ms": 0.0,
+        "stream_attention_exposure_ms": 0.0,
+        "q8_factor": 1.0
+      },
+      "totals": {
+        "pre_ms": 1429.15800080189,
+        "q8_ms": 937.4568400770714,
+        "communication_ms": 308.0919884536082,
+        "service_overhead_ms": 115.500235,
+        "stream_exposure_ms": 0.0,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 2893.62379860457,
+      "tok_s": 2808.9345974828075
+    },
+    "central_r16": {
+      "name": "HeadFold R16 central",
+      "parameters": {
+        "attention_residual": "balanced",
+        "attention_service_imbalance": false,
+        "stream_exposure_ms": 0.026688,
+        "stream_attention_exposure_ms": 0.026688,
+        "q8_factor": 1.0
+      },
+      "totals": {
+        "pre_ms": 1429.15800080189,
+        "q8_ms": 814.5497167918005,
+        "communication_ms": 163.52137896907215,
+        "service_overhead_ms": 115.500235,
+        "stream_exposure_ms": 1.0675200000000007,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 2627.213585834763,
+      "tok_s": 3093.772064754847
+    },
+    "conservative_r16": {
+      "name": "HeadFold R16 conservative",
+      "parameters": {
+        "attention_residual": "conservative",
+        "attention_service_imbalance": true,
+        "stream_exposure_ms": 0.026688,
+        "stream_attention_exposure_ms": 4.189514,
+        "q8_factor": 1.0
+      },
+      "totals": {
+        "pre_ms": 1479.8062798500002,
+        "q8_ms": 819.5570502188481,
+        "communication_ms": 164.49077884893256,
+        "service_overhead_ms": 116.18291887401571,
+        "stream_exposure_ms": 42.695780000000006,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 2726.1495420637966,
+      "tok_s": 2981.494549212
+    },
+    "central_r32": {
+      "name": "HeadFold R32 central",
+      "parameters": {
+        "attention_residual": "balanced",
+        "attention_service_imbalance": false,
+        "stream_exposure_ms": 0.000605,
+        "stream_attention_exposure_ms": 0.000605,
+        "q8_factor": 1.0
+      },
+      "totals": {
+        "pre_ms": 1429.15800080189,
+        "q8_ms": 764.5322224259206,
+        "communication_ms": 99.58768164948455,
+        "service_overhead_ms": 115.500235,
+        "stream_exposure_ms": 0.024200000000000013,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 2512.219074149295,
+      "tok_s": 3235.386628354599
+    },
+    "central_r44": {
+      "name": "HeadFold R44 central",
+      "parameters": {
+        "attention_residual": "balanced",
+        "attention_service_imbalance": false,
+        "stream_exposure_ms": 0.042677,
+        "stream_attention_exposure_ms": 0.042677,
+        "q8_factor": 1.0
+      },
+      "totals": {
+        "pre_ms": 1429.15800080189,
+        "q8_ms": 749.770117513117,
+        "communication_ms": 70.14280577319585,
+        "service_overhead_ms": 115.500235,
+        "stream_exposure_ms": 1.707080000000001,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 2469.6949733602028,
+      "tok_s": 3291.0946848392596
+    },
+    "conservative_r44": {
+      "name": "HeadFold R44 conservative",
+      "parameters": {
+        "attention_residual": "conservative",
+        "attention_service_imbalance": true,
+        "stream_exposure_ms": 0.5,
+        "stream_attention_exposure_ms": 0.5,
+        "q8_factor": 1.0
+      },
+      "totals": {
+        "pre_ms": 1479.8062798500002,
+        "q8_ms": 754.204211523948,
+        "communication_ms": 70.5281352317558,
+        "service_overhead_ms": 116.18291887401571,
+        "stream_exposure_ms": 20.0,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 2544.13827975172,
+      "tok_s": 3194.794899589029
+    },
+    "fp32_peak_bound": {
+      "name": "HeadFold R44 FP32 peak bound",
+      "parameters": {
+        "attention_residual": "balanced",
+        "attention_service_imbalance": false,
+        "stream_exposure_ms": 0.042677,
+        "stream_attention_exposure_ms": 0.042677,
+        "q8_factor": 0.6210752688172042
+      },
+      "totals": {
+        "pre_ms": 1429.15800080189,
+        "q8_ms": 465.663677285566,
+        "communication_ms": 70.14280577319585,
+        "service_overhead_ms": 115.500235,
+        "stream_exposure_ms": 1.707080000000001,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 2185.5885331326517,
+      "tok_s": 3718.9067735224435
+    },
+    "fp16_peak_bound": {
+      "name": "HeadFold R44 FP16 peak bound",
+      "parameters": {
+        "attention_residual": "balanced",
+        "attention_service_imbalance": false,
+        "stream_exposure_ms": 0.042677,
+        "stream_attention_exposure_ms": 0.042677,
+        "q8_factor": 0.3088770053475936
+      },
+      "totals": {
+        "pre_ms": 1429.15800080189,
+        "q8_ms": 231.58674859656495,
+        "communication_ms": 70.14280577319585,
+        "service_overhead_ms": 115.500235,
+        "stream_exposure_ms": 1.707080000000001,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 1951.5116044436509,
+      "tok_s": 4164.976514355487
+    },
+    "zero_q8_bound": {
+      "name": "HeadFold R44 zero Q8",
+      "parameters": {
+        "attention_residual": "balanced",
+        "attention_service_imbalance": false,
+        "stream_exposure_ms": 0.042677,
+        "stream_attention_exposure_ms": 0.042677,
+        "q8_factor": 0.0
+      },
+      "totals": {
+        "pre_ms": 1429.15800080189,
+        "q8_ms": 0.0,
+        "communication_ms": 70.14280577319585,
+        "service_overhead_ms": 115.500235,
+        "stream_exposure_ms": 1.707080000000001,
+        "post_ms": 103.41673427199999
+      },
+      "wall_ms": 1719.9248558470858,
+      "tok_s": 4725.787857747338
+    }
+  },
+  "central_r44_layers": [
+    {
+      "layer": 0,
+      "kind": "recurrent",
+      "pre_ms": 31.60367717,
+      "q8_ms": 18.6848051182324,
+      "communication_ms": 3.443279175257732,
+      "service_overhead_ms": 2.7327130000000004,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.903474293490135,
+      "post_ms": 2.598838622,
+      "layer_ms": 59.105990085490134
+    },
+    {
+      "layer": 1,
+      "kind": "recurrent",
+      "pre_ms": 31.609035965999997,
+      "q8_ms": 18.342200810564968,
+      "communication_ms": 3.8112923711340203,
+      "service_overhead_ms": 2.815082999999998,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 25.011253181698986,
+      "post_ms": 2.60026732,
+      "layer_ms": 59.220556467698984
+    },
+    {
+      "layer": 2,
+      "kind": "recurrent",
+      "pre_ms": 31.678576891999995,
+      "q8_ms": 19.13206082003989,
+      "communication_ms": 2.506055257731959,
+      "service_overhead_ms": 2.8415839999999974,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.522377077771846,
+      "post_ms": 2.5568155679999998,
+      "layer_ms": 58.75776953777184
+    },
+    {
+      "layer": 3,
+      "kind": "attention",
+      "pre_ms": 48.039667028267715,
+      "q8_ms": 20.331175896875898,
+      "communication_ms": 2.8804354639175256,
+      "service_overhead_ms": 3.088397999999998,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 26.342686360793422,
+      "post_ms": 2.549556776,
+      "layer_ms": 76.93191016506114
+    },
+    {
+      "layer": 4,
+      "kind": "recurrent",
+      "pre_ms": 31.598574277999997,
+      "q8_ms": 18.35342705446838,
+      "communication_ms": 2.4105501030927834,
+      "service_overhead_ms": 2.680303000000002,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.486957157561168,
+      "post_ms": 2.609315472,
+      "layer_ms": 57.694846907561164
+    },
+    {
+      "layer": 5,
+      "kind": "recurrent",
+      "pre_ms": 31.66624564,
+      "q8_ms": 18.99144794467824,
+      "communication_ms": 3.210246597938144,
+      "service_overhead_ms": 2.8447130000000023,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 25.089084542616387,
+      "post_ms": 2.6021914159999997,
+      "layer_ms": 59.35752159861639
+    },
+    {
+      "layer": 6,
+      "kind": "recurrent",
+      "pre_ms": 31.600968656,
+      "q8_ms": 18.99300765438773,
+      "communication_ms": 2.3557938144329897,
+      "service_overhead_ms": 2.938378,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.32985646882072,
+      "post_ms": 2.554078106,
+      "layer_ms": 58.48490323082071
+    },
+    {
+      "layer": 7,
+      "kind": "attention",
+      "pre_ms": 48.07411598673228,
+      "q8_ms": 18.945819929262726,
+      "communication_ms": 2.6843315463917525,
+      "service_overhead_ms": 2.8667289999999994,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.53955747565448,
+      "post_ms": 2.597616512,
+      "layer_ms": 75.21128997438676
+    },
+    {
+      "layer": 8,
+      "kind": "recurrent",
+      "pre_ms": 31.620406544,
+      "q8_ms": 18.89418886446813,
+      "communication_ms": 2.3354193814432986,
+      "service_overhead_ms": 2.8877880000000005,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.16007324591143,
+      "post_ms": 2.624587958,
+      "layer_ms": 58.40506774791143
+    },
+    {
+      "layer": 9,
+      "kind": "recurrent",
+      "pre_ms": 31.663725821999996,
+      "q8_ms": 19.486094488919477,
+      "communication_ms": 2.9364651546391753,
+      "service_overhead_ms": 2.867600999999997,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 25.33283764355865,
+      "post_ms": 2.551742864,
+      "layer_ms": 59.54830632955865
+    },
+    {
+      "layer": 10,
+      "kind": "recurrent",
+      "pre_ms": 31.595171054,
+      "q8_ms": 18.904854706900608,
+      "communication_ms": 2.181337731958763,
+      "service_overhead_ms": 2.9528729999999968,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.08174243885937,
+      "post_ms": 2.550376976,
+      "layer_ms": 58.22729046885937
+    },
+    {
+      "layer": 11,
+      "kind": "attention",
+      "pre_ms": 48.05096676338583,
+      "q8_ms": 18.699711183025723,
+      "communication_ms": 2.103660206185567,
+      "service_overhead_ms": 2.7595310000000026,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.605579389211293,
+      "post_ms": 2.615332304,
+      "layer_ms": 74.27187845659712
+    },
+    {
+      "layer": 12,
+      "kind": "recurrent",
+      "pre_ms": 31.602330551999998,
+      "q8_ms": 19.019992969067143,
+      "communication_ms": 1.3918284536082475,
+      "service_overhead_ms": 3.0371280000000027,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.491626422675395,
+      "post_ms": 2.569832206,
+      "layer_ms": 57.663789180675394
+    },
+    {
+      "layer": 13,
+      "kind": "recurrent",
+      "pre_ms": 31.609732024,
+      "q8_ms": 18.15428657997257,
+      "communication_ms": 1.0798449484536081,
+      "service_overhead_ms": 2.7500280000000004,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.02683652842618,
+      "post_ms": 2.5471333759999997,
+      "layer_ms": 56.18370192842618
+    },
+    {
+      "layer": 14,
+      "kind": "recurrent",
+      "pre_ms": 31.596392872000003,
+      "q8_ms": 18.61734183153387,
+      "communication_ms": 1.1791703092783505,
+      "service_overhead_ms": 2.983785000000001,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.822974140812224,
+      "post_ms": 2.639346704,
+      "layer_ms": 57.05871371681223
+    },
+    {
+      "layer": 15,
+      "kind": "attention",
+      "pre_ms": 48.03335631082677,
+      "q8_ms": 18.580113245114532,
+      "communication_ms": 1.3931018556701031,
+      "service_overhead_ms": 2.9223159999999986,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.938208100784635,
+      "post_ms": 2.573838302,
+      "layer_ms": 73.54540271361141
+    },
+    {
+      "layer": 16,
+      "kind": "recurrent",
+      "pre_ms": 31.599675734,
+      "q8_ms": 18.008466846161653,
+      "communication_ms": 0.7092849484536082,
+      "service_overhead_ms": 2.8841740000000016,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 21.644602794615263,
+      "post_ms": 2.601543334,
+      "layer_ms": 55.84582186261527
+    },
+    {
+      "layer": 17,
+      "kind": "recurrent",
+      "pre_ms": 31.701726544000003,
+      "q8_ms": 18.136480549144085,
+      "communication_ms": 0.8582729896907216,
+      "service_overhead_ms": 2.9175840000000015,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 21.95501453883481,
+      "post_ms": 2.570021008,
+      "layer_ms": 56.22676209083481
+    },
+    {
+      "layer": 18,
+      "kind": "recurrent",
+      "pre_ms": 31.598241503999997,
+      "q8_ms": 18.821705500554014,
+      "communication_ms": 1.6032131958762887,
+      "service_overhead_ms": 2.932905999999999,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.400501696430304,
+      "post_ms": 2.553912592,
+      "layer_ms": 57.5526557924303
+    },
+    {
+      "layer": 19,
+      "kind": "attention",
+      "pre_ms": 48.06752060921259,
+      "q8_ms": 18.4543659555684,
+      "communication_ms": 1.898642474226804,
+      "service_overhead_ms": 2.841740999999999,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.237426429795203,
+      "post_ms": 2.597437456,
+      "layer_ms": 73.9023844950078
+    },
+    {
+      "layer": 20,
+      "kind": "recurrent",
+      "pre_ms": 31.606767736,
+      "q8_ms": 19.73883983713443,
+      "communication_ms": 3.1402094845360824,
+      "service_overhead_ms": 2.9918809999999993,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 25.913607321670515,
+      "post_ms": 2.60170221,
+      "layer_ms": 60.12207726767051
+    },
+    {
+      "layer": 21,
+      "kind": "recurrent",
+      "pre_ms": 31.623350293999998,
+      "q8_ms": 18.757198994943515,
+      "communication_ms": 2.246281237113402,
+      "service_overhead_ms": 2.758251999999999,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.804409232056916,
+      "post_ms": 2.603065294,
+      "layer_ms": 58.030824820056914
+    },
+    {
+      "layer": 22,
+      "kind": "recurrent",
+      "pre_ms": 31.601317012,
+      "q8_ms": 18.32644173978897,
+      "communication_ms": 1.7802160824742268,
+      "service_overhead_ms": 2.788559999999997,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.937894822263193,
+      "post_ms": 2.605976848,
+      "layer_ms": 57.14518868226319
+    },
+    {
+      "layer": 23,
+      "kind": "attention",
+      "pre_ms": 48.043013778464555,
+      "q8_ms": 19.35512400484901,
+      "communication_ms": 1.231379793814433,
+      "service_overhead_ms": 2.9877239999999965,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.61690479866344,
+      "post_ms": 2.5503804960000003,
+      "layer_ms": 74.210299073128
+    },
+    {
+      "layer": 24,
+      "kind": "recurrent",
+      "pre_ms": 31.602981742,
+      "q8_ms": 18.28369735433355,
+      "communication_ms": 1.2810424742268043,
+      "service_overhead_ms": 2.983755999999996,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.591172828560353,
+      "post_ms": 2.603047224,
+      "layer_ms": 56.79720179456036
+    },
+    {
+      "layer": 25,
+      "kind": "recurrent",
+      "pre_ms": 31.61192514,
+      "q8_ms": 18.345084440525067,
+      "communication_ms": 0.9410441237113402,
+      "service_overhead_ms": 2.794863999999997,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.123669564236405,
+      "post_ms": 2.594405992,
+      "layer_ms": 56.330000696236404
+    },
+    {
+      "layer": 26,
+      "kind": "recurrent",
+      "pre_ms": 31.607658488,
+      "q8_ms": 18.308489406704606,
+      "communication_ms": 1.4096560824742266,
+      "service_overhead_ms": 2.7330690000000004,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.493891489178832,
+      "post_ms": 2.548885958,
+      "layer_ms": 56.650435935178834
+    },
+    {
+      "layer": 27,
+      "kind": "attention",
+      "pre_ms": 48.043164589212594,
+      "q8_ms": 19.16120672487753,
+      "communication_ms": 1.2262861855670104,
+      "service_overhead_ms": 2.961358999999998,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.39152891044454,
+      "post_ms": 2.549270264,
+      "layer_ms": 73.98396376365713
+    },
+    {
+      "layer": 28,
+      "kind": "recurrent",
+      "pre_ms": 31.616556883999998,
+      "q8_ms": 18.670605757165887,
+      "communication_ms": 0.7016445360824742,
+      "service_overhead_ms": 2.8842370000000024,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.299164293248364,
+      "post_ms": 2.6071942,
+      "layer_ms": 56.52291537724836
+    },
+    {
+      "layer": 29,
+      "kind": "recurrent",
+      "pre_ms": 31.621726637999995,
+      "q8_ms": 18.50361697682095,
+      "communication_ms": 0.7334795876288659,
+      "service_overhead_ms": 2.9188630000000018,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.19863656444982,
+      "post_ms": 2.55405288,
+      "layer_ms": 56.37441608244981
+    },
+    {
+      "layer": 30,
+      "kind": "recurrent",
+      "pre_ms": 31.601189745999996,
+      "q8_ms": 18.46927202036172,
+      "communication_ms": 1.1944511340206185,
+      "service_overhead_ms": 2.8744109999999985,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.58081115438234,
+      "post_ms": 2.60341828,
+      "layer_ms": 56.785419180382334
+    },
+    {
+      "layer": 31,
+      "kind": "attention",
+      "pre_ms": 48.05565409098425,
+      "q8_ms": 17.7877268898417,
+      "communication_ms": 0.8977484536082474,
+      "service_overhead_ms": 2.815083999999999,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 21.543236343449948,
+      "post_ms": 2.5931842080000003,
+      "layer_ms": 72.19207464243419
+    },
+    {
+      "layer": 32,
+      "kind": "recurrent",
+      "pre_ms": 31.60825193,
+      "q8_ms": 18.767158133649186,
+      "communication_ms": 1.4644123711340205,
+      "service_overhead_ms": 2.959567,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.233814504783208,
+      "post_ms": 2.549518008,
+      "layer_ms": 57.391584442783206
+    },
+    {
+      "layer": 33,
+      "kind": "recurrent",
+      "pre_ms": 31.679023528000002,
+      "q8_ms": 20.02098321572096,
+      "communication_ms": 1.9928742268041237,
+      "service_overhead_ms": 2.799628000000002,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.856162442525086,
+      "post_ms": 2.55664104,
+      "layer_ms": 59.091827010525094
+    },
+    {
+      "layer": 34,
+      "kind": "recurrent",
+      "pre_ms": 31.688209675999996,
+      "q8_ms": 19.06250156506368,
+      "communication_ms": 1.4338507216494845,
+      "service_overhead_ms": 2.917805999999999,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 23.456835286713165,
+      "post_ms": 2.557639246,
+      "layer_ms": 57.70268420871316
+    },
+    {
+      "layer": 35,
+      "kind": "attention",
+      "pre_ms": 48.06821454921259,
+      "q8_ms": 18.476054924595545,
+      "communication_ms": 1.4656857731958761,
+      "service_overhead_ms": 2.8235659999999996,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.80798369779142,
+      "post_ms": 2.620842512,
+      "layer_ms": 73.49704075900401
+    },
+    {
+      "layer": 36,
+      "kind": "recurrent",
+      "pre_ms": 31.594626427999998,
+      "q8_ms": 19.68938569857313,
+      "communication_ms": 1.6032131958762887,
+      "service_overhead_ms": 3.1712399999999974,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 24.506515894449418,
+      "post_ms": 2.560866048,
+      "layer_ms": 58.66200837044942
+    },
+    {
+      "layer": 37,
+      "kind": "recurrent",
+      "pre_ms": 31.601122952,
+      "q8_ms": 18.307636400721925,
+      "communication_ms": 0.6468882474226804,
+      "service_overhead_ms": 2.957165,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 21.954366648144607,
+      "post_ms": 2.66594952,
+      "layer_ms": 56.22143912014461
+    },
+    {
+      "layer": 38,
+      "kind": "recurrent",
+      "pre_ms": 31.616047574000003,
+      "q8_ms": 18.268864440668168,
+      "communication_ms": 1.2492074226804122,
+      "service_overhead_ms": 3.000010999999997,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 22.56075986334858,
+      "post_ms": 2.601999782,
+      "layer_ms": 56.778807219348586
+    },
+    {
+      "layer": 39,
+      "kind": "attention",
+      "pre_ms": 48.05709007559055,
+      "q8_ms": 17.918681037837107,
+      "communication_ms": 0.5310086597938144,
+      "service_overhead_ms": 2.8338360000000016,
+      "stream_exposure_ms": 0.042677,
+      "service_ms": 21.326202697630926,
+      "post_ms": 2.62490939,
+      "layer_ms": 72.00820216322148
+    }
+  ],
+  "targets": {
+    "3000": {
+      "target_ms": 2709.3333333333335,
+      "required_q8_factor": 1.3196157787242544,
+      "required_speedup": 0.7577963344502863,
+      "required_effective_tflops": 4.377031627784853
+    },
+    "3500": {
+      "target_ms": 2322.285714285714,
+      "required_q8_factor": 0.8033940595506465,
+      "required_speedup": 1.2447191861977658,
+      "required_effective_tflops": 7.189498019478295
+    },
+    "4000": {
+      "target_ms": 2032.0,
+      "required_q8_factor": 0.41622777017044094,
+      "required_speedup": 2.4025307095451858,
+      "required_effective_tflops": 13.877017378332994
+    }
+  },
+  "interpretation": {
+    "central": "Bulk-synchronous sequence shards, measured exact HeadFold GDN epochs, balanced exact attention, same-layer R44 expert pooling, exact dense selectors, and serialized measured Q8/PCIe service contention.",
+    "conservative": "Retains the worst measured attention residual, applies the 2.36% attention-layout imbalance to MoE service, and charges 0.5 ms/layer streaming exposure, more than eleven times the worst measured R44 full-pre exposure.",
+    "peak_bounds": "Hardware arithmetic bounds only. They scale the measured exact-Q8 compute term and do not claim an implementation."
+  }
+}

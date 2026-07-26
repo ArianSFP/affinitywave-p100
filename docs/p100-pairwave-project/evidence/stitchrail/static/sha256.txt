@@ -1,0 +1,6 @@
+82d5d9826e31e7f238b9d33fca0483ac08094121d66df38f86e15cfb864c624f  /home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/p100-exact-final-static-20260726/source.diff
+44d0db6d838953a57fe5dc18d9045f1d3274f933c94d7e5494816a0d254403b7  /home/arian/llama.cpp-q36-moe/.worktrees/build-p100-stitchrail-20260725/bin/libggml-cuda.so.0.15.3
+4263adf54288fbf3d57006f29843426e2f7e25cab7da93a16ca7fadc565c44c3  /home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/ggml/src/ggml-cuda/affinity-wave.cu
+318f6ecf6e965eef600d7b920e603779b282e6905fd7d1f01d662d3318338c56  /home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/ggml/src/ggml-cuda/cpy.cu
+3776819e2c1ee41272699050e3cecf280c344a73557196f61090e1e2e5f8a595  /home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/ggml/src/ggml-cuda/gated_delta_net.cu
+040f3ab0d1956adf0184bbc6bdcfad3de4102e4eeaa09ea26ae14df4595d3984  /home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/ggml/src/ggml-cuda/ggml-cuda.cu

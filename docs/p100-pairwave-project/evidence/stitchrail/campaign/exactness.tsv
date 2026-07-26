@@ -1,0 +1,8 @@
+check	arm	result	detail
+dump_count	off	PASS	files=640
+dump_count	on	PASS	files=640
+dump_layout	both	PASS	identical relative paths
+dump_bytes	both	PASS	files=640
+logits_sha	off	PASS	47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5
+logits_sha	on	PASS	47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5
+logits_bytes	both	PASS	byte-identical

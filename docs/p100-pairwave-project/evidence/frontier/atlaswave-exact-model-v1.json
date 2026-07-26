@@ -1,0 +1,56 @@
+{
+  "model": "AtlasWave exact replicated-activation lower bound",
+  "source": "broadwave-live-pp8128.analysis.json",
+  "target_ms": 2032.0,
+  "parameters": {
+    "dense_factor": 1.0,
+    "gdn_factor": 1.0,
+    "allreduce_ms": 10.3,
+    "allreduces_per_layer": 2
+  },
+  "measured_aggregate_ms": {
+    "recorded_nonexpert": 4853.593021,
+    "missing_attention_tails": 819.6690000000001,
+    "sgemm": 2722.702296,
+    "gdn": 579.579862,
+    "flash_recorded": 440.133204
+  },
+  "balanced_nonexpert_ms": 1418.31550525,
+  "head_local_attention_ms": 325.3,
+  "current_balanced_attention_ms": 314.950551,
+  "attention_adjustment_ms": 10.349448999999993,
+  "atlas_nonexpert_ms": 1428.66495425,
+  "gross_allreduce_ms": 824.0,
+  "scenarios": {
+    "1": {
+      "expert_pool_cells": 1,
+      "expert_stage_ms_per_layer": 21.007569,
+      "expert_total_ms": 840.30276,
+      "compute_floor_ms": 2268.96771425,
+      "compute_floor_tok_s": 3582.2457714814527,
+      "target_slack_before_communication_ms": -236.96771424999997,
+      "required_allreduce_overlap_fraction": 1.287582177487864,
+      "gdn_factor_needed_for_compute_only_target": -0.6354447749946146
+    },
+    "2": {
+      "expert_pool_cells": 2,
+      "expert_stage_ms_per_layer": 17.87841,
+      "expert_total_ms": 715.1364,
+      "compute_floor_ms": 2143.80135425,
+      "compute_floor_tok_s": 3791.3960563027763,
+      "target_slack_before_communication_ms": -111.8013542499998,
+      "required_allreduce_overlap_fraction": 1.1356812551577669,
+      "gdn_factor_needed_for_compute_only_target": 0.2283972471769573
+    },
+    "4": {
+      "expert_pool_cells": 4,
+      "expert_stage_ms_per_layer": 16.62276,
+      "expert_total_ms": 664.9104,
+      "compute_floor_ms": 2093.5753542499997,
+      "compute_floor_tok_s": 3882.3536891089198,
+      "target_slack_before_communication_ms": -61.57535424999969,
+      "required_allreduce_overlap_fraction": 1.074727371662621,
+      "gdn_factor_needed_for_compute_only_target": 0.5750345497683997
+    }
+  }
+}

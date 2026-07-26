@@ -1,0 +1,9 @@
+key	value
+campaign	stitchrail-final-prefill-v2
+seed	exact-p100-20260726
+created_utc	2026-07-26T01:29:56Z
+pairs_2048	5
+pairs_8128	3
+expected_dump_files	640
+expected_logits_sha	47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5
+qualification_harness	/home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/run-qualification.sh

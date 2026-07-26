@@ -1,0 +1,102 @@
+{
+  "schema": "affinitywave.foldwave.replay.v1",
+  "source_analysis": "results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/broadwave-live-pp8128.analysis.json",
+  "base": {
+    "makespan_ms": 3188.5575220000005,
+    "tok_s": 2549.1150603115884,
+    "busy_ms": [
+      2110.3306029999994,
+      2226.856551000001,
+      2354.8699959999985,
+      2475.9704799999995
+    ],
+    "measured_window_ms": 3187.830587,
+    "absolute_error_ms": 0.7269350000005943,
+    "relative_error": 0.00022803438895562436
+  },
+  "calibration": {
+    "diagonal_q8_r0_ms": 866.9199614643545,
+    "diagonal_q8_r16_ms": 852.2407514450866,
+    "diagonal_comm_r0_ms": 322.6457006185567,
+    "diagonal_comm_r16_ms": 180.08579298969073,
+    "diagonal_q8_factor": 0.983067398754468,
+    "diagonal_comm_factor": 0.5581533944027185,
+    "selector_dense_factor": 0.906,
+    "current_attention_ms_per_layer": 44.0133204,
+    "exact_attention_ms_per_layer": 34.664322999999996,
+    "attention_ceiling_ms": 93.48997400000002,
+    "stream_exposed_long_ms_per_layer": 0.026688,
+    "stream_exposed_short_ms_per_layer": 4.189514
+  },
+  "scenarios": {
+    "diagonal_r16": {
+      "makespan_ms": 3135.8595443874997,
+      "tok_s": 2591.9528234443205,
+      "busy_ms": [
+        2096.3983856817995,
+        2212.9699278093194,
+        2340.8636351726236,
+        2461.990579748589
+      ]
+    },
+    "diagonal_r16_plus_exact_selectors": {
+      "makespan_ms": 3064.3930992482888,
+      "tok_s": 2652.4012216297706,
+      "busy_ms": [
+        2033.4992609317997,
+        2150.0841402493174,
+        2277.9660291806235,
+        2394.7390822265893
+      ]
+    },
+    "central_exact_composition": {
+      "makespan_ms": 2971.9706452482887,
+      "tok_s": 2734.885693772039
+    },
+    "conservative_short_overlap": {
+      "makespan_ms": 3231.9736592482886,
+      "tok_s": 2514.8719813175885
+    },
+    "same_layer_pooling_without_barrier_cost": {
+      "makespan_ms": 2915.638458281849,
+      "tok_s": 2787.7256101189355,
+      "busy_ms": [
+        1929.976127663256,
+        2046.8997934662045,
+        2173.891973671486,
+        2290.8616416330524
+      ]
+    },
+    "pooled_plus_attention_without_barrier_cost": {
+      "makespan_ms": 2823.216004281849,
+      "tok_s": 2878.9862297722225
+    },
+    "noncomposable_all_measured_ceiling": {
+      "makespan_ms": 2707.216004281849,
+      "tok_s": 3002.3463170816094
+    }
+  },
+  "targets": {
+    "3000": {
+      "target_ms": 2709.3333333333335,
+      "central_gap_ms": 262.63731191495526,
+      "noncomposable_gap_ms": -2.1173290514843757
+    },
+    "3500": {
+      "target_ms": 2322.285714285714,
+      "central_gap_ms": 649.6849309625745,
+      "noncomposable_gap_ms": 384.9302899961349
+    },
+    "4000": {
+      "target_ms": 2032.0,
+      "central_gap_ms": 939.9706452482887,
+      "noncomposable_gap_ms": 675.2160042818491
+    }
+  },
+  "interpretation": {
+    "central": "Barrier-free diagonal R16, exact dense selectors, full measured attention ceiling, and long-corridor streaming.",
+    "conservative": "No attention credit before integration and short-corridor R16 exposure on every layer.",
+    "same_layer_pooling_without_barrier_cost": "Invalid optimistic control: applies the same-layer R16 pooling factors to the diagonal DAG without its rendezvous.",
+    "noncomposable_all_measured_ceiling": "Invalid upper bound: additionally credits the exact RelayWave panel pipeline even though its full hidden all-gather conflicts with StreamCacheRelay and measured Q8/copy contention."
+  }
+}
