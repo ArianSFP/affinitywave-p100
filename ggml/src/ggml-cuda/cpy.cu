@@ -191,6 +191,31 @@ static __global__ void cpy_scalar_contiguous(const char * cx, char * cdst, const
     dst[i] = ggml_cuda_cast<dst_t>(x[i]);
 }
 
+static __global__ void cpy_f32_f16_contiguous_p100(
+        const float * __restrict__ x, half * __restrict__ dst, const int64_t ne) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_PASCAL
+    const int64_t i4 = (int64_t) blockDim.x*blockIdx.x + threadIdx.x;
+    const int64_t ne4 = ne / 4;
+
+    ggml_cuda_pdl_sync();
+    if (i4 < ne4) {
+        const float4 value = reinterpret_cast<const float4 *>(x)[i4];
+        half2 * dst2 = reinterpret_cast<half2 *>(dst) + 2*i4;
+        dst2[0] = ggml_cuda_cast<half2>(make_float2(value.x, value.y));
+        dst2[1] = ggml_cuda_cast<half2>(make_float2(value.z, value.w));
+    }
+
+    if (i4 == 0) {
+        for (int64_t i = 4*ne4; i < ne; ++i) {
+            dst[i] = ggml_cuda_cast<half>(x[i]);
+        }
+    }
+#else
+    GGML_UNUSED_VARS(x, dst, ne);
+    NO_DEVICE_CODE;
+#endif
+}
+
 template<typename src_t, typename dst_t>
 static void ggml_cpy_scalar_contiguous_cuda(
     const char * cx, char * cdst, const int64_t ne,
@@ -200,6 +225,20 @@ cudaStream_t stream) {
     GGML_ASSERT(num_blocks <= INT_MAX);
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params((dim3)num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream);
     ggml_cuda_kernel_launch(cpy_scalar_contiguous<src_t, dst_t>, launch_params, cx, cdst, ne);
+}
+
+static void ggml_cpy_f32_f16_contiguous_p100_cuda(
+        const char * cx, char * cdst, const int64_t ne, cudaStream_t stream) {
+    constexpr int block_size = 256;
+    const int64_t ne4 = ne / 4;
+    const int64_t num_blocks = (ne4 + block_size - 1) / block_size;
+    GGML_ASSERT(num_blocks > 0 && num_blocks <= INT_MAX);
+    const ggml_cuda_kernel_launch_params launch_params =
+            ggml_cuda_kernel_launch_params((dim3) num_blocks, block_size, 0, stream);
+    ggml_cuda_kernel_launch(
+            cpy_f32_f16_contiguous_p100, launch_params,
+            reinterpret_cast<const float *>(cx),
+            reinterpret_cast<half *>(cdst), ne);
 }
 
 template<typename src_t, typename dst_t, bool transposed = false>
@@ -494,8 +533,20 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         }
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F16) {
         if (contiguous_srcs) {
-            ggml_cpy_scalar_contiguous_cuda<float, half>
-                (src0_ddc, src1_ddc, ne, main_stream);
+            const char * p100_exact = getenv("GGML_CUDA_AW_P100_EXACT");
+            const bool use_p100_converter =
+                    p100_exact != nullptr && strcmp(p100_exact, "1") == 0 &&
+                    ggml_cuda_info().devices[ctx.device].cc == GGML_CUDA_CC_PASCAL &&
+                    src0->ne[1] >= 512 &&
+                    (reinterpret_cast<uintptr_t>(src0_ddc) & 15) == 0 &&
+                    (reinterpret_cast<uintptr_t>(src1_ddc) & 7) == 0;
+            if (use_p100_converter) {
+                ggml_cpy_f32_f16_contiguous_p100_cuda(
+                        src0_ddc, src1_ddc, ne, main_stream);
+            } else {
+                ggml_cpy_scalar_contiguous_cuda<float, half>
+                    (src0_ddc, src1_ddc, ne, main_stream);
+            }
         } else {
             ggml_cpy_scalar_cuda<float, half>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);

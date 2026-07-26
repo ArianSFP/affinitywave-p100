@@ -1174,6 +1174,16 @@ void launch_fattn(
             }
         }
 
+        const char * parallel_blocks_env =
+                getenv("GGML_CUDA_AW_FA_PARALLEL_BLOCKS");
+        if (parallel_blocks_env) {
+            const int parallel_blocks_forced = atoi(parallel_blocks_env);
+            if (parallel_blocks_forced > 0 &&
+                    parallel_blocks_forced <= ntiles_KV) {
+                parallel_blocks = parallel_blocks_forced;
+            }
+        }
+
         blocks_num.x = ntiles_x;
         blocks_num.y = parallel_blocks;
         blocks_num.z = ntiles_z_gqa*K->ne[2]*Q->ne[3];

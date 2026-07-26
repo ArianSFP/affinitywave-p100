@@ -1,6 +1,43 @@
 #include "models.h"
 #include "llama-memory-recurrent.h"
 
+#include <cstdlib>
+#include <cstring>
+#include <initializer_list>
+
+static bool qwen35moe_p100_exact_shared_f16(
+        const llm_graph_context & graph,
+        const ggml_tensor * input,
+        std::initializer_list<const ggml_tensor *> weights) {
+    static const bool enabled = []() {
+        const char * value = getenv("GGML_CUDA_AW_P100_EXACT");
+        return value != nullptr && strcmp(value, "1") == 0;
+    }();
+
+    if (!enabled ||
+            graph.n_layer != 40 ||
+            graph.n_embd != 2048 ||
+            graph.n_expert != 256 ||
+            graph.n_tokens < 512 ||
+            graph.loras == nullptr ||
+            !graph.loras->empty() ||
+            input->type != GGML_TYPE_F32 ||
+            input->ne[0] != graph.n_embd ||
+            input->ne[2] != 1 ||
+            input->ne[3] != 1 ||
+            !ggml_is_contiguous(input)) {
+        return false;
+    }
+    for (const ggml_tensor * weight : weights) {
+        if (weight == nullptr ||
+                weight->type != GGML_TYPE_Q8_0 ||
+                !ggml_is_contiguous(weight)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void llama_model_qwen35moe::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,        hparams.n_ff_exp, false);
     ml.get_key(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp, false);
@@ -289,8 +326,19 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
 
     // Order: joint QG projection, QG split, Q norm, KV projection, K norm, RoPE, attention
 
+    ggml_tensor * projection_input = cur;
+    if (qwen35moe_p100_exact_shared_f16(
+                *this, cur,
+                { model.layers[il].wq,
+                  model.layers[il].wk,
+                  model.layers[il].wv })) {
+        projection_input = ggml_cast(ctx0, cur, GGML_TYPE_F16);
+        cb(projection_input, "aw_dense_f16_attn", il);
+    }
+
     // Qwen3Next uses a single Q projection that outputs query + gate
-    ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
+    ggml_tensor * Qcur_full = build_lora_mm(
+            model.layers[il].wq, projection_input, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
     cb(Qcur_full, "Qcur_full", il);
 
     ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full, n_embd_head, n_head, n_tokens,
@@ -302,10 +350,12 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
     Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
     cb(Qcur, "Qcur_normed", il);
 
-    ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur, model.layers[il].wk_s);
+    ggml_tensor * Kcur = build_lora_mm(
+            model.layers[il].wk, projection_input, model.layers[il].wk_s);
     cb(Kcur, "Kcur", il);
 
-    ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur, model.layers[il].wv_s);
+    ggml_tensor * Vcur = build_lora_mm(
+            model.layers[il].wv, projection_input, model.layers[il].wv_s);
     cb(Vcur, "Vcur", il);
 
     // Apply K normalization
@@ -377,19 +427,32 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
     GGML_ASSERT(ubatch.equal_seqs());
     GGML_ASSERT(ubatch.n_tokens == n_seq_tokens * n_seqs);
 
+    ggml_tensor * projection_input = cur;
+    if (qwen35moe_p100_exact_shared_f16(
+                *this, cur,
+                { model.layers[il].wqkv,
+                  model.layers[il].wqkv_gate,
+                  model.layers[il].ssm_beta,
+                  model.layers[il].ssm_alpha })) {
+        projection_input = ggml_cast(ctx0, cur, GGML_TYPE_F16);
+        cb(projection_input, "aw_dense_f16_attn", il);
+    }
+
     // Input projections
-    auto qkvz = build_qkvz(cur, il);
+    auto qkvz = build_qkvz(projection_input, il);
     ggml_tensor * qkv_mixed = qkvz.first;
     ggml_tensor * z         = qkvz.second;
 
-    ggml_tensor * beta = build_lora_mm(model.layers[il].ssm_beta, cur, model.layers[il].ssm_beta_s);
+    ggml_tensor * beta = build_lora_mm(
+            model.layers[il].ssm_beta, projection_input, model.layers[il].ssm_beta_s);
     beta = ggml_reshape_4d(ctx0, beta, 1, num_v_heads, n_seq_tokens, n_seqs);
     cb(beta, "beta", il);
 
     beta = ggml_sigmoid(ctx0, beta);
     cb(beta, "beta_sigmoid", il);
 
-    ggml_tensor * alpha = build_lora_mm(model.layers[il].ssm_alpha, cur, model.layers[il].ssm_alpha_s);
+    ggml_tensor * alpha = build_lora_mm(
+            model.layers[il].ssm_alpha, projection_input, model.layers[il].ssm_alpha_s);
     alpha = ggml_reshape_3d(ctx0, alpha, num_v_heads, n_seq_tokens, n_seqs);
     cb(alpha, "alpha", il);
 
@@ -497,6 +560,15 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, c
     // Check if this is an MoE layer
     GGML_ASSERT(model.layers[il].ffn_gate_inp != nullptr);
 
+    ggml_tensor * shared_projection_input = cur;
+    if (qwen35moe_p100_exact_shared_f16(
+                *this, cur,
+                { model.layers[il].ffn_gate_shexp,
+                  model.layers[il].ffn_up_shexp })) {
+        shared_projection_input = ggml_cast(ctx0, cur, GGML_TYPE_F16);
+        cb(shared_projection_input, "aw_dense_f16_shared", il);
+    }
+
     ggml_tensor * moe_out =
         build_moe_ffn(cur,
             model.layers[il].ffn_gate_inp,
@@ -517,7 +589,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, c
     // Add shared experts if present - following Qwen3Next reference implementation
     if (model.layers[il].ffn_up_shexp != nullptr) {
         ggml_tensor * ffn_shexp =
-            build_ffn(cur,
+            build_ffn(shared_projection_input,
                 model.layers[il].ffn_up_shexp, NULL, model.layers[il].ffn_up_shexp_s,
                 model.layers[il].ffn_gate_shexp, NULL, model.layers[il].ffn_gate_shexp_s,
                 model.layers[il].ffn_down_shexp, NULL, model.layers[il].ffn_down_shexp_s,

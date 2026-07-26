@@ -682,6 +682,29 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     memset(&split_state, 0, sizeof(split_state));
     tensor_config tc = get_tensor_config();
     split_state.axis = tc.axis;
+    const char * pairwave_manifest =
+            getenv("GGML_CUDA_AW_PAIRWAVE_MANIFEST");
+    const bool pairwave =
+            pairwave_manifest != nullptr &&
+            pairwave_manifest[0] != '\0';
+    const bool pairwave_moe_ep =
+            getenv("GGML_CUDA_MOE_EP") != nullptr;
+    if (pairwave && pairwave_moe_ep &&
+            std::regex_match(tensor_name,
+                pattern_ffn_exps_weight)) {
+        GGML_ASSERT(ud->n_devices == 4);
+        GGML_ASSERT(hparams.n_layer() == 40);
+        GGML_ASSERT(split_state.axis ==
+                GGML_BACKEND_SPLIT_AXIS_2);
+        GGML_ASSERT(tensor->ne[2] == 256);
+        const int pair = tc.il < 20 ?
+                tc.il % 2 : (tc.il + 1) % 2;
+        split_state.ne[pair*2 + 0] = 128;
+        split_state.ne[pair*2 + 1] = 128;
+        split_state.nr[0] = 1;
+        split_state.n_segments = 1;
+        return split_state;
+    }
     if (split_state.axis >= 0 && split_state.axis < GGML_MAX_DIMS) {
         const int64_t blck_size = ggml_blck_size(tc.tensor_axis_0->type);
         const float * tensor_split = ud->model->tensor_split();

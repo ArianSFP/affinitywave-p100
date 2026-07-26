@@ -200,6 +200,9 @@ llama_context::llama_context(
     cparams.fused_gdn_ar = true;
     cparams.fused_gdn_ch = true;
     cparams.auto_fgdn    = true;
+    if (const char * value = getenv("GGML_CUDA_AW_GDN_WY_GRAPH")) {
+        cparams.fused_gdn_ch = atoi(value) == 0;
+    }
 
     // with causal attention, the batch size is limited by the context size
     cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;

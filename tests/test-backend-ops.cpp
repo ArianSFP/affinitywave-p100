@@ -59,6 +59,16 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
         static const size_t n_threads = N_THREADS;
 
         auto init_thread = [&](size_t start, size_t end) {
+            const char * fixed_seed = getenv("GGML_TEST_FIXED_SEED");
+            if (fixed_seed != nullptr && fixed_seed[0] != '\0') {
+                const uint32_t seed = static_cast<uint32_t>(strtoul(fixed_seed, nullptr, 0));
+                std::default_random_engine gen(seed ^ static_cast<uint32_t>(start));
+                std::uniform_real_distribution<float> distribution(min, max);
+                for (size_t i = start; i < end; i++) {
+                    data[i] = distribution(gen);
+                }
+                return;
+            }
             thread_local std::default_random_engine gen(std::random_device{}());
             std::uniform_real_distribution<float> distribution(min, max);
             for (size_t i = start; i < end; i++) {
@@ -9511,6 +9521,48 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     // Qwen3-VL-8B https://github.com/ggml-org/llama.cpp/issues/17012
     test_cases.emplace_back(new test_flash_attn_ext(72, 72, 16, {1, 1}, 5776, 5776, false, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
+    for (int kv : {2032, 4064, 6096, 8128}) {
+        for (int q_per_kv : {2, 4, 8}) {
+            test_cases.emplace_back(new test_flash_attn_ext(
+                        256, 256, 1, {q_per_kv, 1}, kv, 2032, true, false, 0, 0,
+                        GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+    for (int q_per_kv : {2, 4, 8}) {
+        test_cases.emplace_back(new test_flash_attn_ext(
+                    256, 256, 1, {q_per_kv, 1}, 8128, 8128, true, false, 0, 0,
+                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    }
+    for (int kv : {2032, 4064, 6096, 8128}) {
+        for (int q_per_kv : {2, 4, 8}) {
+            test_cases.emplace_back(new test_flash_attn_ext(
+                        256, 256, 2, {q_per_kv, 1}, kv, 2032, true, false, 0, 0,
+                        GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+    for (int kv : {1016, 2032, 3048, 4064, 5080, 6096, 7112, 8128}) {
+        test_cases.emplace_back(new test_flash_attn_ext(
+                    256, 256, 1, {8, 1}, kv, 1016, true, false, 0, 0,
+                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    }
+    for (int nh : {1, 2}) {
+        for (const std::pair<int, int> shape : {
+                std::pair<int, int>{1024, 1024},
+                std::pair<int, int>{2032, 1008},
+                std::pair<int, int>{3072, 1040},
+                std::pair<int, int>{4064,  992},
+                std::pair<int, int>{5120, 1056},
+                std::pair<int, int>{6096,  976},
+                std::pair<int, int>{7168, 1072},
+                std::pair<int, int>{8128,  960},
+        }) {
+            test_cases.emplace_back(new test_flash_attn_ext(
+                        256, 256, nh, {8, 1}, shape.first, shape.second,
+                        true, false, 0, 0, GGML_PREC_F32,
+                        GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 8, {8, 1}, 7680, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 8, {8, 1}, 7680, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 8, {8, 1}, 7680,   1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0));
@@ -9628,6 +9680,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 256, 1)); // PP-256
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 512, 1)); // PP-512
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1024, 1)); // PP-1024
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 2032, 1)); // PP-2032
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 8, 128, 2032, 1));   // HeadFold segment
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 8, 128, 8128, 1));  // HeadFold PP-8128
     // Small model configs (fewer heads = less GPU occupancy for autoregressive)
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128, 64, 1));   // 4h PP-64
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128, 256, 1));  // 4h PP-256

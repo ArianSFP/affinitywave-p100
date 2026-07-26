@@ -28,6 +28,7 @@ int main(int argc, char ** argv) {
     int repeats = 12;
     int route_pattern = 0;
     int devices = 4;
+    int active_cells = 4;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--tokens-per-cell") == 0 && i + 1 < argc) {
             tokens_per_cell = parse_positive(argv[++i], "tokens-per-cell");
@@ -37,6 +38,12 @@ int main(int argc, char ** argv) {
             devices = parse_positive(argv[++i], "devices");
             if (devices > 4) {
                 fprintf(stderr, "devices must be between 1 and 4\n");
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--active-cells") == 0 && i + 1 < argc) {
+            active_cells = parse_positive(argv[++i], "active-cells");
+            if (active_cells > 4) {
+                fprintf(stderr, "active cells must be between 1 and 4\n");
                 return 2;
             }
         } else if (strcmp(argv[i], "--route-pattern") == 0 && i + 1 < argc) {
@@ -52,7 +59,8 @@ int main(int argc, char ** argv) {
                 return 2;
             }
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("usage: %s [--devices N] [--tokens-per-cell N] [--repeats N] "
+            printf("usage: %s [--devices N] [--active-cells N] "
+                   "[--tokens-per-cell N] [--repeats N] "
                    "[--route-pattern uniform|tail-mix|edge-mix]\n", argv[0]);
             printf("requires GGML_CUDA_AFFINITY_WAVE=1 and GGML_CUDA_AW_MAP=<manifest>\n");
             return 0;
@@ -78,7 +86,8 @@ int main(int argc, char ** argv) {
     for (int device = 0; device < devices; ++device) {
         workers[device] = std::thread([&, device]() {
             const ggml_cuda_aw_bench_params params = {
-                device, devices, 4, tokens_per_cell, repeats, route_pattern
+                device, devices, active_cells, tokens_per_cell, repeats,
+                route_pattern
             };
             status[device] = bench(&params, &results[device], errors[device].data(), errors[device].size());
         });
@@ -105,7 +114,8 @@ int main(int argc, char ** argv) {
                "\"layout_ms\":%.6f,\"down_expand_ms\":%.6f,"
                "\"device_bytes\":%llu,\"free_bytes_after\":%llu,"
                "\"descriptors\":%d,\"route_rows\":%d,\"tiles_m64\":%d,\"tiles_m32\":%d,"
-               "\"tiles_m16\":%d,\"q8_kernel\":\"%s\","
+               "\"tiles_m16\":%d,\"tiles_warp\":%d,\"tiles_m8\":%d,\"tiles_m4\":%d,"
+               "\"q8_kernel\":\"%s\",\"q8_engine\":\"%s\","
                "\"check_ran\":%d,\"check_passed\":%d,\"check_count\":%llu,"
                "\"check_mismatches\":%llu,\"check_first_mismatch\":%llu,"
                "\"check_expected\":%u,\"check_observed\":%u}\n",
@@ -114,8 +124,24 @@ int main(int argc, char ** argv) {
                 r.pack_ms, r.gate_ms, r.up_ms, r.swiglu_ms, r.down_ms, r.reduce_ms,
                 r.layout_ms, r.down_expand_ms,
                 (unsigned long long) r.device_bytes, (unsigned long long) r.free_bytes_after,
-                r.descriptors, r.route_rows, r.tiles_m64, r.tiles_m32, r.tiles_m16,
+                r.descriptors, r.route_rows, r.tiles_m64, r.tiles_m32, r.tiles_m16, r.tiles_warp,
+                r.tiles_m8, r.tiles_m4,
                 r.q8_kernel == 1 ? "interleave" : "cuda",
+                r.q8_engine == 1 ? "warpwave" : r.q8_engine == 2 ? "compact" :
+                r.q8_engine == 3 ? "hybrid" : r.q8_engine == 4 ? "tailwave" :
+                r.q8_engine == 5 ? "widewave" : r.q8_engine == 6 ? "broadwave" :
+                r.q8_engine == 7 ? "flexwave" : r.q8_engine == 8 ? "flexwave1" :
+                r.q8_engine == 9 ? "rendezvous" : r.q8_engine == 10 ? "megawave" :
+                r.q8_engine == 11 ? "fabwave" : r.q8_engine == 12 ? "expandwave" :
+                r.q8_engine == 13 ? "railwave" :
+                r.q8_engine == 14 ? "regbwave" :
+                r.q8_engine == 15 ? "crestwave" :
+                r.q8_engine == 16 ? "dualrailwave" :
+                r.q8_engine == 17 ? "doublewave" :
+                r.q8_engine == 18 ? "vectorwave" :
+                r.q8_engine == 19 ? "halfpipe_sync" :
+                r.q8_engine == 20 ? "halfpipe_bar" :
+                r.q8_engine == 21 ? "cohortrail" : "legacy",
                 r.check_ran, r.check_passed,
                 (unsigned long long) r.check_count, (unsigned long long) r.check_mismatches,
                 (unsigned long long) r.check_first_mismatch,

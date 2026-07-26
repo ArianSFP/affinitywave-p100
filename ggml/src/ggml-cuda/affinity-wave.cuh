@@ -41,7 +41,11 @@ struct ggml_cuda_aw_bench_result {
     int32_t tiles_m64;
     int32_t tiles_m32;
     int32_t tiles_m16;
+    int32_t tiles_warp;
+    int32_t tiles_m8;
+    int32_t tiles_m4;
     int32_t q8_kernel;
+    int32_t q8_engine;
     int32_t check_ran;
     int32_t check_passed;
     uint64_t check_count;
@@ -64,6 +68,21 @@ struct ggml_cuda_aw_live_cell {
     float *       output;
     float *       shared_output;
     const float * reference;
+};
+
+struct ggml_cuda_aw_headfold_gdn_lane {
+    int32_t       tokens;
+    int32_t       qk_stride;
+    int32_t       v_stride;
+    int32_t       scalar_stride;
+    const float * q;
+    const float * k;
+    const float * v;
+    const float * gate;
+    const float * beta;
+    const float * state;
+    float *       output;
+    float *       state_output;
 };
 
 // Validate the four opt-in environment controls and the placement manifest.
@@ -100,3 +119,23 @@ int ggml_cuda_affinity_wave_live_service(
         int32_t n_cells,
         char * error,
         size_t error_capacity);
+
+int ggml_cuda_affinity_wave_r44_prefetch(
+        int32_t layer,
+        char * error,
+        size_t error_capacity);
+
+int ggml_cuda_affinity_wave_headfold_gdn(
+        void * const * streams,
+        const ggml_cuda_aw_headfold_gdn_lane * lanes,
+        int32_t n_lanes,
+        char * error,
+        size_t error_capacity);
+
+bool ggml_cuda_affinity_wave_trace_enabled();
+bool ggml_cuda_affinity_wave_gemm_map_enabled();
+void ggml_cuda_affinity_wave_trace_push(const char * name, uint32_t category, uint64_t payload);
+void ggml_cuda_affinity_wave_trace_pop();
+void ggml_cuda_affinity_wave_trace_mark(const char * name, uint32_t category, uint64_t payload);
+void ggml_cuda_affinity_wave_trace_name_thread(const char * name);
+void ggml_cuda_affinity_wave_trace_name_stream(void * stream, const char * name);

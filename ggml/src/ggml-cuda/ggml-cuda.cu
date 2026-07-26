@@ -1835,6 +1835,29 @@ static const cublas_force_compute_type & ggml_cuda_cublas_get_force_compute_type
     return compute_type;
 }
 
+static int ggml_cuda_aw_cublas_runtime_version(
+        cublasHandle_t handle, int device) {
+    static std::array<std::atomic<int>,
+            GGML_CUDA_MAX_DEVICES> versions{};
+    int version = versions[device].load(
+            std::memory_order_acquire);
+    if (version != 0) {
+        return version;
+    }
+    CUBLAS_CHECK(cublasGetVersion(handle, &version));
+    versions[device].store(version,
+            std::memory_order_release);
+    return version;
+}
+
+__global__ static void aw_dense_accumulate_f16(
+        const half * __restrict__ input, float * __restrict__ output, int64_t count) {
+    for (int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x; i < count;
+            i += (int64_t) gridDim.x*blockDim.x) {
+        output[i] += __half2float(input[i]);
+    }
+}
+
 static void ggml_cuda_op_mul_mat_cublas(
     ggml_backend_cuda_context & ctx,
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
@@ -1869,6 +1892,29 @@ static void ggml_cuda_op_mul_mat_cublas(
         ggml_is_contiguous(src0) &&
         row_diff == src0->ne[1] &&
         dst->op_params[0] == GGML_PREC_DEFAULT;
+
+    const bool aw_gemm_map = ggml_cuda_affinity_wave_gemm_map_enabled();
+    if (aw_gemm_map) {
+        const char * precision = "f32";
+        if (supports_bf16 && src0->type == GGML_TYPE_BF16 &&
+                ggml_is_contiguous(src0) && row_diff == src0->ne[1]) {
+            precision = "bf16-f32";
+        } else if (fast_fp16_hardware_available(cc) && use_fp16) {
+            const auto & force_compute_type = ggml_cuda_cublas_get_force_compute_type();
+            precision = force_compute_type.fp16 ? "f16-f16" : "f16-f32";
+        }
+        char name[768];
+        snprintf(name, sizeof(name),
+                "aw-gemm-map|dev=%d|dst=%s|weight=%s|input=%s"
+                "|M=%" PRId64 "|N=%" PRId64 "|K=%" PRId64
+                "|A=%s|B=%s|C=%s|lda=%" PRId64 "|ldb=%" PRId64 "|ldc=%" PRId64
+                "|split=%d|precision=%s",
+                id, dst->name, src0->name, src1->name,
+                row_diff, src1_ncols, ne10,
+                ggml_type_name(src0->type), ggml_type_name(src1->type), ggml_type_name(dst->type),
+                ne00, ne10, ldc, row_diff != src0->ne[1], precision);
+        ggml_cuda_affinity_wave_trace_push(name, 9, (uint64_t) id);
+    }
 
     if (supports_bf16 && src0->type == GGML_TYPE_BF16 && ggml_is_contiguous(src0) && row_diff == src0->ne[1]) {
         ggml_cuda_pool_alloc<nv_bfloat16> src1_as_bf16(ctx.pool(id));
@@ -1923,14 +1969,139 @@ static void ggml_cuda_op_mul_mat_cublas(
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(id), stream));
 
         const auto & force_compute_type = ggml_cuda_cublas_get_force_compute_type();
+        const char * aw_dense_value = getenv("GGML_CUDA_AW_DENSE_T64");
+        const bool aw_dense_segmented =
+                aw_dense_value != nullptr && strcmp(aw_dense_value, "1") == 0 &&
+                cc == GGML_CUDA_CC_PASCAL && src0->type == GGML_TYPE_Q8_0 &&
+                dst->type == GGML_TYPE_F32 && row_diff == src0->ne[1] &&
+                row_diff == ne0 && row_diff >= 512 && src1_ncols >= 128 &&
+                ne10 % 1024 == 0 && strstr(src0->name, "exps") == nullptr;
 
-        if (!force_compute_type.fp16 && (GGML_CUDA_CC_IS_CDNA(cc)
+        if (aw_dense_segmented) {
+            ggml_cuda_pool_alloc<half> dst_f16(ctx.pool(id), row_diff*src1_ncols);
+            const half alpha = 1.0f;
+            const half beta = 0.0f;
+            constexpr int k_chunk = 1024;
+            const int64_t count = row_diff*src1_ncols;
+            const int blocks = (int) std::min<int64_t>((count + 255)/256, 65535);
+            const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_F16);
+
+            for (int64_t k0 = 0; k0 < ne10; k0 += k_chunk) {
+                CUBLAS_CHECK(
+                    cublasGemmEx(ctx.cublas_handle(id), CUBLAS_OP_T, CUBLAS_OP_N,
+                            row_diff, src1_ncols, k_chunk,
+                            &alpha, src0_ptr + k0, CUDA_R_16F, ne00,
+                                    src1_ptr + k0, CUDA_R_16F, ne10,
+                            &beta,  dst_f16.get(), CUDA_R_16F, ldc,
+                            CUBLAS_COMPUTE_16F,
+                            CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+                if (k0 == 0) {
+                    to_fp32_cuda(dst_f16.get(), dst_dd_i, count, stream);
+                } else {
+                    aw_dense_accumulate_f16<<<blocks, 256, 0, stream>>>(
+                            dst_f16.get(), dst_dd_i, count);
+                }
+            }
+        } else if (!force_compute_type.fp16 && (GGML_CUDA_CC_IS_CDNA(cc)
                                         || GGML_CUDA_CC_IS_RDNA4(cc)
                                         || cc == GGML_CUDA_CC_VOLTA
                                         || force_compute_type.fp32))
         {
             const float alpha = 1.0f;
             const float beta = 0.0f;
+            cublasGemmAlgo_t algorithm =
+                    CUBLAS_GEMM_DEFAULT_TENSOR_OP;
+            int selector_index = -1;
+            const char * aw_dense_selectors =
+                    getenv("GGML_CUDA_AW_DENSE_SELECTORS");
+#if defined(CUDART_VERSION) && defined(CUBLAS_VERSION)
+            constexpr bool aw_exact_dense_toolkit =
+                    CUDART_VERSION == 12080 &&
+                    CUBLAS_VERSION == 120803;
+#else
+            constexpr bool aw_exact_dense_toolkit = false;
+#endif
+            const bool aw_exact_dense_signature =
+                    aw_exact_dense_toolkit &&
+                    ggml_cuda_aw_cublas_runtime_version(
+                        ctx.cublas_handle(id), id) == 120803 &&
+                    force_compute_type.fp32 &&
+                    cc == GGML_CUDA_CC_PASCAL &&
+                    id == ctx.device &&
+                    stream ==
+                        ctx.streams[id][ctx.curr_stream_no] &&
+                    src0->type == GGML_TYPE_Q8_0 &&
+                    (src1->type == GGML_TYPE_F32 ||
+                     src1->type == GGML_TYPE_F16) &&
+                    dst->type == GGML_TYPE_F32 &&
+                    src0->ne[2] == 1 && src0->ne[3] == 1 &&
+                    src1->ne[2] == 1 && src1->ne[3] == 1 &&
+                    dst->ne[2] == 1 && dst->ne[3] == 1 &&
+                    ne00 == ne10 &&
+                    row_low == 0 &&
+                    row_high == src0->ne[1] &&
+                    row_diff == ne0 &&
+                    ldc == row_diff &&
+                    src1_ncols == src1->ne[1] &&
+                    ggml_is_contiguous(src0) &&
+                    ggml_is_contiguous(src1) &&
+                    ggml_is_contiguous(dst) &&
+                    dst->op_params[0] == GGML_PREC_DEFAULT &&
+                    (reinterpret_cast<uintptr_t>(src0_ptr) & 15) == 0 &&
+                    (reinterpret_cast<uintptr_t>(src1_ptr) & 15) == 0 &&
+                    (reinterpret_cast<uintptr_t>(dst_dd_i) & 15) == 0;
+            if (aw_dense_selectors != nullptr &&
+                    strcmp(aw_dense_selectors, "exact") == 0 &&
+                    aw_exact_dense_signature) {
+                int selector = -1;
+                if (src1_ncols == 2032) {
+                    if (row_diff == 8192 && ne10 == 2048) {
+                        selector = 6;
+                        selector_index = 0;
+                    } else if (row_diff == 2048 && ne10 == 4096) {
+                        selector = 10;
+                        selector_index = 1;
+                    } else if (row_diff == 4096 && ne10 == 2048) {
+                        selector = 5;
+                        selector_index = 2;
+                    } else if (row_diff == 2048 && ne10 == 512) {
+                        selector = 6;
+                        selector_index = 3;
+                    } else if (row_diff == 512 && ne10 == 2048) {
+                        selector = 3;
+                        selector_index = 4;
+                    } else if (row_diff == 32 && ne10 == 2048) {
+                        selector = 7;
+                        selector_index = 5;
+                    }
+                } else if (src1_ncols == 512) {
+                    if (row_diff == 8192 && ne10 == 2048) {
+                        selector = 6;
+                        selector_index = 6;
+                    } else if (row_diff == 512 && ne10 == 2048) {
+                        selector = 8;
+                        selector_index = 7;
+                    }
+                }
+                if (selector >= 0) {
+                    algorithm =
+                            static_cast<cublasGemmAlgo_t>(selector);
+                }
+            }
+            if (selector_index >= 0) {
+                static_assert(GGML_CUDA_MAX_DEVICES <= 16);
+                static std::array<std::atomic<uint16_t>, 8>
+                        reported{};
+                const uint16_t bit =
+                        (uint16_t) 1u << id;
+                if ((reported[selector_index].fetch_or(bit) &
+                        bit) == 0) {
+                    fprintf(stderr,
+                            "AffinityWave: exact dense selector device=%d algorithm=%d M=%" PRId64 " N=%" PRId64 " K=%" PRId64 "\n",
+                            id, (int) algorithm, row_diff,
+                            src1_ncols, ne10);
+                }
+            }
             CUBLAS_CHECK(
                 cublasGemmEx(ctx.cublas_handle(id), CUBLAS_OP_T, CUBLAS_OP_N,
                         row_diff, src1_ncols, ne10,
@@ -1938,7 +2109,7 @@ static void ggml_cuda_op_mul_mat_cublas(
                                 src1_ptr,  CUDA_R_16F, ne10,
                         &beta,   dst_dd_i, CUDA_R_32F, ldc,
                         CUBLAS_COMPUTE_32F,
-                        CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+                        algorithm));
         } else {
             ggml_cuda_pool_alloc<half> dst_f16(ctx.pool(id), row_diff*src1_ncols);
 
@@ -1987,6 +2158,10 @@ static void ggml_cuda_op_mul_mat_cublas(
                     &alpha, src0_ddf_i,  ne00,
                             src1_ddf1_i, ne10,
                     &beta,  dst_dd_i,    ldc));
+    }
+
+    if (aw_gemm_map) {
+        ggml_cuda_affinity_wave_trace_pop();
     }
 
     GGML_UNUSED_VARS(dst, src1_ddq_i, src1_padded_row_size);
@@ -4186,6 +4361,97 @@ static int ggml_backend_cuda_affinity_wave_live_service(
         }
     }
     return 0;
+}
+
+static int ggml_backend_cuda_affinity_wave_r44_prefetch(
+        int32_t layer,
+        char * error,
+        size_t error_capacity) {
+    return ggml_cuda_affinity_wave_r44_prefetch(
+            layer, error, error_capacity);
+}
+
+static int ggml_backend_cuda_affinity_wave_headfold_gdn(
+        ggml_backend_t const * backends,
+        const ggml_cuda_aw_headfold_gdn_lane * lanes,
+        int32_t n_lanes,
+        char * error,
+        size_t error_capacity) {
+    void * streams[4];
+    for (int device = 0; device < 4; ++device) {
+        GGML_ASSERT(ggml_backend_is_cuda(backends[device]));
+        ggml_backend_cuda_context * cuda_ctx =
+                (ggml_backend_cuda_context *) backends[device]->context;
+        GGML_ASSERT(cuda_ctx->device == device);
+        ggml_cuda_set_device(device);
+        cudaStream_t stream = cuda_ctx->stream(device, 0);
+        for (int stream_no = 1;
+                stream_no < GGML_CUDA_MAX_STREAMS; ++stream_no) {
+            cudaStream_t concurrent_stream =
+                    cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream == nullptr) {
+                continue;
+            }
+            cudaEvent_t & event =
+                    cuda_ctx->affinity_wave_join_events[stream_no];
+            if (event == nullptr) {
+                CUDA_CHECK(cudaEventCreateWithFlags(
+                            &event, cudaEventDisableTiming));
+            }
+            CUDA_CHECK(cudaEventRecord(event, concurrent_stream));
+            CUDA_CHECK(cudaStreamWaitEvent(stream, event));
+        }
+        cuda_ctx->curr_stream_no = 0;
+        streams[device] = (void *) stream;
+    }
+    const int result = ggml_cuda_affinity_wave_headfold_gdn(
+            streams, lanes, n_lanes, error, error_capacity);
+    if (result != 0) {
+        return result;
+    }
+    for (int device = 0; device < 4; ++device) {
+        ggml_backend_cuda_context * cuda_ctx =
+                (ggml_backend_cuda_context *) backends[device]->context;
+        ggml_cuda_set_device(device);
+        cudaStream_t stream = cuda_ctx->stream(device, 0);
+        cudaEvent_t & event =
+                cuda_ctx->affinity_wave_join_events[0];
+        if (event == nullptr) {
+            CUDA_CHECK(cudaEventCreateWithFlags(
+                        &event, cudaEventDisableTiming));
+        }
+        CUDA_CHECK(cudaEventRecord(event, stream));
+        for (int stream_no = 1;
+                stream_no < GGML_CUDA_MAX_STREAMS; ++stream_no) {
+            cudaStream_t concurrent_stream =
+                    cuda_ctx->streams[device][stream_no];
+            if (concurrent_stream != nullptr) {
+                CUDA_CHECK(cudaStreamWaitEvent(
+                            concurrent_stream, event));
+            }
+        }
+    }
+    return 0;
+}
+
+static void ggml_backend_cuda_affinity_wave_trace(
+        int32_t action, const char * name, uint32_t category, uint64_t payload) {
+    switch (action) {
+        case 0:
+            ggml_cuda_affinity_wave_trace_push(name, category, payload);
+            break;
+        case 1:
+            ggml_cuda_affinity_wave_trace_pop();
+            break;
+        case 2:
+            ggml_cuda_affinity_wave_trace_mark(name, category, payload);
+            break;
+        case 3:
+            ggml_cuda_affinity_wave_trace_name_thread(name);
+            break;
+        default:
+            GGML_ABORT("invalid AffinityWave trace action");
+    }
 }
 
 static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data,
@@ -6465,7 +6731,28 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                         return false;
                     }
                 }
-                if (b->type == GGML_TYPE_F16 && a->type != GGML_TYPE_F16) {
+                const char * p100_exact_env =
+                        getenv("GGML_CUDA_AW_P100_EXACT");
+                const bool aw_p100_exact_q8_f16 =
+                        p100_exact_env != nullptr &&
+                        atoi(p100_exact_env) != 0 &&
+                        ggml_cuda_info().devices[
+                            dev_ctx->device].cc ==
+                                GGML_CUDA_CC_PASCAL &&
+                        op->op == GGML_OP_MUL_MAT &&
+                        a->type == GGML_TYPE_Q8_0 &&
+                        b->type == GGML_TYPE_F16 &&
+                        op->type == GGML_TYPE_F32 &&
+                        a->ne[0] == 2048 &&
+                        a->ne[2] == 1 && a->ne[3] == 1 &&
+                        b->ne[0] == 2048 &&
+                        b->ne[1] >= 512 &&
+                        b->ne[2] == 1 && b->ne[3] == 1 &&
+                        ggml_is_contiguous(a) &&
+                        ggml_is_contiguous(b);
+                if (b->type == GGML_TYPE_F16 &&
+                        a->type != GGML_TYPE_F16 &&
+                        !aw_p100_exact_q8_f16) {
                     return false;
                 }
 #ifdef GGML_USE_MUSA
@@ -6981,6 +7268,15 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_live_service") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_live_service;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_r44_prefetch") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_r44_prefetch;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_headfold_gdn") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_headfold_gdn;
+    }
+    if (strcmp(name, "ggml_backend_cuda_affinity_wave_trace") == 0) {
+        return (void *)ggml_backend_cuda_affinity_wave_trace;
     }
     if (strcmp(name, "ggml_backend_cuda_affinity_wave_corridor_copy") == 0) {
         return (void *)ggml_backend_cuda_affinity_wave_corridor_copy;
