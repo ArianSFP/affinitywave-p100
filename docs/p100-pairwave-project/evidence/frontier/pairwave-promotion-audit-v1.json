@@ -1,0 +1,16 @@
+{
+  "affected_tokens": 499,
+  "changed_tokens": 137,
+  "changed_tokens_outside_promotions": 0,
+  "changed_values": 174,
+  "layer": 0,
+  "max_abs_difference": 6.103515625e-05,
+  "promoted_routes": 1966,
+  "tile_transitions": {
+    "m16->m32": 860,
+    "m16->m64": 71,
+    "m32->m16": 100,
+    "m32->m64": 910,
+    "m64->m32": 25
+  }
+}

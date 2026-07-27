@@ -1,0 +1,56 @@
+{
+  "model": "AtlasWave exact replicated-activation lower bound",
+  "source": "broadwave-live-pp8128.analysis.json",
+  "target_ms": 2032.0,
+  "parameters": {
+    "dense_factor": 1.0,
+    "gdn_factor": 0.345,
+    "allreduce_ms": 10.3,
+    "allreduces_per_layer": 2
+  },
+  "measured_aggregate_ms": {
+    "recorded_nonexpert": 4853.593021,
+    "missing_attention_tails": 819.6690000000001,
+    "sgemm": 2722.702296,
+    "gdn": 579.579862,
+    "flash_recorded": 440.133204
+  },
+  "balanced_nonexpert_ms": 1323.4093028475,
+  "head_local_attention_ms": 325.3,
+  "current_balanced_attention_ms": 314.950551,
+  "attention_adjustment_ms": 10.349448999999993,
+  "atlas_nonexpert_ms": 1333.7587518475,
+  "gross_allreduce_ms": 824.0,
+  "scenarios": {
+    "1": {
+      "expert_pool_cells": 1,
+      "expert_stage_ms_per_layer": 21.007569,
+      "expert_total_ms": 840.30276,
+      "compute_floor_ms": 2174.0615118475,
+      "compute_floor_tok_s": 3738.624668946414,
+      "target_slack_before_communication_ms": -142.0615118474998,
+      "required_allreduce_overlap_fraction": 1.1724047473877424,
+      "gdn_factor_needed_for_compute_only_target": 0.019555225005386534
+    },
+    "2": {
+      "expert_pool_cells": 2,
+      "expert_stage_ms_per_layer": 17.87841,
+      "expert_total_ms": 715.1364,
+      "compute_floor_ms": 2048.8951518475,
+      "compute_floor_tok_s": 3967.016073355895,
+      "target_slack_before_communication_ms": -16.895151847500074,
+      "required_allreduce_overlap_fraction": 1.0205038250576457,
+      "gdn_factor_needed_for_compute_only_target": 0.8833972471769554
+    },
+    "4": {
+      "expert_pool_cells": 4,
+      "expert_stage_ms_per_layer": 16.62276,
+      "expert_total_ms": 664.9104,
+      "compute_floor_ms": 1998.6691518475,
+      "compute_floor_tok_s": 4066.7060841394186,
+      "target_slack_before_communication_ms": 33.33084815250004,
+      "required_allreduce_overlap_fraction": 0.9595499415625,
+      "gdn_factor_needed_for_compute_only_target": 1.2300345497683978
+    }
+  }
+}

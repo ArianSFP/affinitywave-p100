@@ -1,0 +1,19 @@
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Jan_15_19:20:09_PST_2025
+Cuda compilation tools, release 12.8, V12.8.61
+Build cuda_12.8.r12.8/compiler.35404655_0
+cuobjdump: NVIDIA (R) fat binary listing tool
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Fri_Jan__3_19:19:51_PST_2025
+Cuda compilation tools, release 12.8, V12.8.55
+Build cuda_12.8.r12.8/compiler.35351055_0
+nvdisasm: NVIDIA (R) CUDA disassembler
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Fri_Jan__3_19:13:46_PST_2025
+Cuda compilation tools, release 12.8, V12.8.55
+Build cuda_12.8.r12.8/compiler.35351055_0
+g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0
+Copyright (C) 2024 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

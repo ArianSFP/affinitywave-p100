@@ -1,0 +1,17 @@
+ M docs/backend/AFFINITY_WAVE.md
+ M examples/affinity-wave/affinity-wave-bench.cpp
+ M ggml/src/ggml-backend-meta.cpp
+ M ggml/src/ggml-cuda/CMakeLists.txt
+ M ggml/src/ggml-cuda/affinity-wave.cu
+ M ggml/src/ggml-cuda/affinity-wave.cuh
+ M ggml/src/ggml-cuda/cpy.cu
+ M ggml/src/ggml-cuda/fattn-common.cuh
+ M ggml/src/ggml-cuda/fattn-tile.cuh
+ M ggml/src/ggml-cuda/gated_delta_net.cu
+ M ggml/src/ggml-cuda/ggml-cuda.cu
+ M src/llama-context.cpp
+ M src/llama-model.cpp
+ M src/models/qwen35moe.cpp
+ M tests/test-backend-ops.cpp
+?? bench/COORDINATION-20260725.md
+?? results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/

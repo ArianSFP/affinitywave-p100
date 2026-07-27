@@ -1,0 +1,28 @@
+{
+  "all": {
+    "blocks": 1031798784,
+    "zero_blocks": 7565952,
+    "q_values": 33017561088,
+    "q_zeros": 608832674,
+    "zero_block_fraction": 0.007332778558498476,
+    "q_zero_fraction": 0.018439662226331914
+  },
+  "trunk": {
+    "tensors": 120,
+    "blocks": 1006632960,
+    "zero_blocks": 7563904,
+    "q_values": 32212254720,
+    "q_zeros": 602551350,
+    "zero_block_fraction": 0.007514063517252604,
+    "q_zero_fraction": 0.018705655820667744
+  },
+  "trunk_excluding_layer0": {
+    "tensors": 117,
+    "blocks": 981467136,
+    "zero_blocks": 619008,
+    "q_values": 31406948352,
+    "q_zeros": 265740463,
+    "zero_block_fraction": 0.0006306966145833334,
+    "q_zero_fraction": 0.008461199732672455
+  }
+}

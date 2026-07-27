@@ -1,0 +1,873 @@
+{
+  "schema": "affinitywave.stitchrail.replay.v1",
+  "sources": {
+    "capture": "/home/arian/llama.cpp-q36-moe/.worktrees/affinitywave-frontier-20260724/results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/cache-relay-routes-pp8128-v1.bin",
+    "capture_sha256": "0dd89bf538822716dbed425a6aadbe1b90f452de0a867859e9ca3ad4a1c618e4",
+    "accepted_trace": "/home/arian/llama.cpp-q36-moe/.worktrees/affinitywave-frontier-20260724/results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/diagonal-panel2048-halfpipe-sync-dense-exact-p8128-trace-v1.analysis.json",
+    "accepted_trace_sha256": "7901e1e618d9f4e49d9b67367e53037995b65f378ea82077058f2e861842e9f2",
+    "accepted_trace_sqlite_sha256": "3e1df0b23a19cb9252c33ef6cfc30fc76f5e16033946391091a55bfa2bbc1731",
+    "service_trace": "/home/arian/llama.cpp-q36-moe/.worktrees/affinitywave-frontier-20260724/results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/broadwave-live-pp8128.analysis.json",
+    "service_trace_sha256": "1a8d071a21d3a9529a132d34e7411300384345a1f888a01624bbab9938fce29d",
+    "active1_sqlite": "/home/arian/llama.cpp-q36-moe/.worktrees/affinitywave-frontier-20260724/results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/cohortrail-raillocal-single-ct3-trace.sqlite",
+    "active1_sqlite_sha256": "d3ae7adba3b1e5555f4715dadca0a59e4609afedb5a6a0ec99241ca6378aa47d",
+    "active2_sqlite": "/home/arian/llama.cpp-q36-moe/.worktrees/affinitywave-frontier-20260724/results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/cohortrail-rail-a-p2-trace.sqlite",
+    "active2_sqlite_sha256": "782064f7157a2441f820c65731a71345c43dad92a36c55d567ec5f4d0de5342e",
+    "cohortrail_wall_runs": [
+      {
+        "path": "/home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/cohortrail-diagonal-pp8128-wall-r1.out",
+        "sha256": "e19f295eb21a10b316659e6e84ca993171796c8c3e48211cb148e41aba564a87",
+        "wall_ms": 2867.518963
+      },
+      {
+        "path": "/home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/cohortrail-diagonal-pp8128-wall-r2.out",
+        "sha256": "780ceaab9cb576c809ea4ddd7449729ccb5fa9d7422ec17770c95cf1c31a3e49",
+        "wall_ms": 2866.422474
+      },
+      {
+        "path": "/home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/cohortrail-diagonal-pp8128-wall-r3.out",
+        "sha256": "23a81a01ae87836d03dcc625c4815d1bb45774a40d2e73e220b53bab2955aeec",
+        "wall_ms": 2868.454128
+      }
+    ],
+    "qualified_boundaries": {
+      "path": "/home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/cohortrail-retained-all-c512-dumps",
+      "files": 640,
+      "sha256": "511ec6ac3baa55a8640cba3bab04edca47a5916257112606ce016432605e4563"
+    },
+    "reference_boundaries": {
+      "path": "/home/arian/llama.cpp-q36-moe/.worktrees/affinitywave-frontier-20260724/results/qwen36-35b-moe-pp-20260721/affinitywave-frontier-20260724/cohortrail-pairwave-all-v1",
+      "files": 640,
+      "sha256": "511ec6ac3baa55a8640cba3bab04edca47a5916257112606ce016432605e4563"
+    },
+    "qualified_logits": {
+      "path": "/home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/cohortrail-retained-c512-logits-c512.bin",
+      "bytes": 126647308,
+      "sha256": "47e84b679f12bae440e4f743d8305699a4f01cc9e22e18418824009f346020a5"
+    },
+    "route_pass": 3
+  },
+  "descriptor_counts": {
+    "M64": 34467,
+    "M32": 10357,
+    "M16": 22553
+  },
+  "descriptor_projection_count": 202131,
+  "cost_model": {
+    "pcie_bytes_per_ms": 9700000.0,
+    "input_bytes_per_peer": 16646144,
+    "return_bytes_per_peer": 8323072,
+    "local_copy_ms": 0.02,
+    "linear_projection_ms_per_tile": {
+      "M64": 0.02021459405615033,
+      "M32": 0.0147490899230794,
+      "M16": 0.010473067928878642
+    },
+    "accepted_class_ms": {
+      "M64": 2090.20924,
+      "M32": 458.268973,
+      "M16": 708.597303
+    },
+    "wave_costs": {
+      "single": {
+        "M64": [
+          [
+            0.26466208333333335,
+            0.26456287500000003,
+            0.06577575735294118
+          ],
+          [
+            0.26319839166666664,
+            0.2633080166666667,
+            0.0655823431372549
+          ],
+          [
+            0.26503323333333334,
+            0.26493426666666664,
+            0.06606115441176472
+          ],
+          [
+            0.26389834166666665,
+            0.263440475,
+            0.06554343137254902
+          ]
+        ],
+        "M32": [
+          [
+            0.11842858333333334,
+            0.11794441666666666,
+            0.053415625
+          ],
+          [
+            0.11838733333333333,
+            0.11794733333333333,
+            0.05330375
+          ],
+          [
+            0.11853633333333333,
+            0.11850179166666666,
+            0.05353295833333333
+          ],
+          [
+            0.118180625,
+            0.11815929166666667,
+            0.053157
+          ]
+        ],
+        "M16": [
+          [
+            0.13279195833333332,
+            0.13229593055555555,
+            0.028673121527777776
+          ],
+          [
+            0.13254541666666667,
+            0.13214766666666666,
+            0.028583493055555558
+          ],
+          [
+            0.13316611111111112,
+            0.13316966666666666,
+            0.028719902777777778
+          ],
+          [
+            0.13243915277777776,
+            0.13257518055555556,
+            0.02857615972222222
+          ]
+        ]
+      },
+      "batch2": {
+        "M64": [
+          [
+            0.25916889814814814,
+            0.2583895046296296,
+            0.0651589669117647
+          ],
+          [
+            0.2598753888888889,
+            0.2583189398148148,
+            0.06530922916666668
+          ],
+          [
+            0.27090550462962965,
+            0.27038668518518516,
+            0.0680248125
+          ],
+          [
+            0.2716451527777778,
+            0.2716518287037037,
+            0.0683677806372549
+          ]
+        ],
+        "M32": [
+          [
+            0.11971129166666666,
+            0.11932316666666666,
+            0.04768033333333333
+          ],
+          [
+            0.12044191666666666,
+            0.120417875,
+            0.04808375
+          ],
+          [
+            0.12589770833333333,
+            0.12614304166666668,
+            0.04968566666666667
+          ],
+          [
+            0.12728595833333334,
+            0.12713408333333334,
+            0.050367666666666665
+          ]
+        ]
+      },
+      "P2": {
+        "M16": [
+          [
+            0.24814230555555558,
+            0.2479138611111111,
+            0.06330323611111112
+          ],
+          [
+            0.2488309861111111,
+            0.24867947222222223,
+            0.06340051041666667
+          ],
+          [
+            0.25849620833333337,
+            0.2578207361111111,
+            0.06581605555555556
+          ],
+          [
+            0.25934237499999996,
+            0.25929481944444444,
+            0.06618014583333333
+          ]
+        ]
+      },
+      "raw_projection_ms": {
+        "active1_m64": [
+          [
+            1.3233104166666667,
+            1.322814375,
+            1.118187875
+          ],
+          [
+            1.3159919583333333,
+            1.3165400833333334,
+            1.1148998333333333
+          ],
+          [
+            1.3251661666666668,
+            1.3246713333333333,
+            1.123039625
+          ],
+          [
+            1.3194917083333333,
+            1.317202375,
+            1.1142383333333332
+          ]
+        ],
+        "active1_m32": [
+          [
+            0.11842858333333334,
+            0.11794441666666666,
+            0.053415625
+          ],
+          [
+            0.11838733333333333,
+            0.11794733333333333,
+            0.05330375
+          ],
+          [
+            0.11853633333333333,
+            0.11850179166666666,
+            0.05353295833333333
+          ],
+          [
+            0.118180625,
+            0.11815929166666667,
+            0.053157
+          ]
+        ],
+        "active1_singleton": [
+          [
+            0.398375875,
+            0.39688779166666666,
+            0.3440774583333333
+          ],
+          [
+            0.39763625,
+            0.396443,
+            0.3430019166666667
+          ],
+          [
+            0.39949833333333334,
+            0.399509,
+            0.34463883333333334
+          ],
+          [
+            0.3973174583333333,
+            0.3977255416666667,
+            0.34291391666666665
+          ]
+        ],
+        "active2_m64": [
+          [
+            2.3325200833333333,
+            2.325505541666667,
+            2.215404875
+          ],
+          [
+            2.3388785,
+            2.3248704583333333,
+            2.220513791666667
+          ],
+          [
+            2.4381495416666668,
+            2.4334801666666666,
+            2.312843625
+          ],
+          [
+            2.444806375,
+            2.4448664583333333,
+            2.3245045416666668
+          ]
+        ],
+        "active2_m32": [
+          [
+            0.11971129166666666,
+            0.11932316666666666,
+            0.09536066666666666
+          ],
+          [
+            0.12044191666666666,
+            0.120417875,
+            0.0961675
+          ],
+          [
+            0.12589770833333333,
+            0.12614304166666668,
+            0.09937133333333334
+          ],
+          [
+            0.12728595833333334,
+            0.12713408333333334,
+            0.10073533333333333
+          ]
+        ],
+        "active2_p2": [
+          [
+            0.7444269166666667,
+            0.7437415833333333,
+            0.7596388333333334
+          ],
+          [
+            0.7464929583333333,
+            0.7460384166666667,
+            0.760806125
+          ],
+          [
+            0.775488625,
+            0.7734622083333333,
+            0.7897926666666667
+          ],
+          [
+            0.7780271249999999,
+            0.7778844583333333,
+            0.79416175
+          ]
+        ]
+      }
+    },
+    "baseline_wall_ms": 2927.555,
+    "calibration_scale": 0.9434233293567663,
+    "measured_cohortrail_wall_mean_ms": 2867.465188333333,
+    "measured_cohortrail_wall_max_deviation_percent": 0.0363636265777724,
+    "cohortrail_calibration_offset_ms": 0.5447875943914369,
+    "priority_order": [
+      "return-sum-post",
+      "pre",
+      "down",
+      "gate-up"
+    ],
+    "ready_tiebreak": "downstream-critical-path"
+  },
+  "cost_sha256": "d32a3c25fd21561fb3a3cfa791c0d6c7dc8088eddceac91005695484bd5c43ca",
+  "scenarios": {
+    "current_whole_diagonal_halfpipe": {
+      "raw_wall_ms": 3103.1191501232333,
+      "calibrated_wall_ms": 2927.555,
+      "calibration_offset_ms": 0.0,
+      "tok_s": 2776.378240545438,
+      "sm_work_ms": 8280.153393053197,
+      "sm_work_by_gpu_ms": [
+        1958.9517743859024,
+        1882.3225314696451,
+        1990.666236777396,
+        2448.212850420231
+      ],
+      "sm_perfect_balance_floor_ms": 1952.922470414743,
+      "copy_work_ms": 1241.9900701030936,
+      "max_diagonals_in_flight": 2,
+      "tasks": 2529,
+      "bundle_count": 0,
+      "m16_pair_count": 0,
+      "last_tasks": [
+        {
+          "task": "l39_h3_post",
+          "start_ms": 3100.4476451232335,
+          "end_ms": 3103.1191501232333
+        },
+        {
+          "task": "d42_done",
+          "start_ms": 3103.1191501232333,
+          "end_ms": 3103.1191501232333
+        },
+        {
+          "task": "l39_h3_sum",
+          "start_ms": 3100.2044592732336,
+          "end_ms": 3100.4476451232335
+        },
+        {
+          "task": "d42_service_barrier",
+          "start_ms": 3100.4476451232335,
+          "end_ms": 3100.4476451232335
+        },
+        {
+          "task": "l39_h3_g3_return",
+          "start_ms": 3100.1844592732336,
+          "end_ms": 3100.2044592732336
+        },
+        {
+          "task": "l39_h3_g1_return",
+          "start_ms": 3099.3264106134397,
+          "end_ms": 3100.1844592732336
+        },
+        {
+          "task": "l39_h3_g3_compute",
+          "start_ms": 3092.9604392620504,
+          "end_ms": 3099.8394586250897
+        },
+        {
+          "task": "l39_h3_g1_compute",
+          "start_ms": 3092.9604392620504,
+          "end_ms": 3099.3264106134397
+        },
+        {
+          "task": "l39_h3_g2_return",
+          "start_ms": 3098.260988674334,
+          "end_ms": 3099.119037334128
+        },
+        {
+          "task": "l39_h3_g2_compute",
+          "start_ms": 3092.9604392620504,
+          "end_ms": 3098.260988674334
+        },
+        {
+          "task": "l39_h3_g0_return",
+          "start_ms": 3096.215424986596,
+          "end_ms": 3097.07347364639
+        },
+        {
+          "task": "l39_h3_g0_compute",
+          "start_ms": 3092.9604392620504,
+          "end_ms": 3096.215424986596
+        }
+      ]
+    },
+    "current_whole_diagonal_cohortrail": {
+      "raw_wall_ms": 3038.8483213507466,
+      "calibrated_wall_ms": 2867.465188333333,
+      "calibration_offset_ms": 0.5447875943914369,
+      "tok_s": 2834.559259191658,
+      "sm_work_ms": 8043.263894613039,
+      "sm_work_by_gpu_ms": [
+        1900.116500336718,
+        1821.7412180870601,
+        1931.8605743268445,
+        2389.545601862396
+      ],
+      "sm_perfect_balance_floor_ms": 1897.050700587726,
+      "copy_work_ms": 1241.9900701030936,
+      "max_diagonals_in_flight": 2,
+      "tasks": 2529,
+      "bundle_count": 0,
+      "m16_pair_count": 0,
+      "last_tasks": [
+        {
+          "task": "l39_h3_post",
+          "start_ms": 3036.176816350747,
+          "end_ms": 3038.8483213507466
+        },
+        {
+          "task": "d42_done",
+          "start_ms": 3038.8483213507466,
+          "end_ms": 3038.8483213507466
+        },
+        {
+          "task": "l39_h3_sum",
+          "start_ms": 3035.933630500747,
+          "end_ms": 3036.176816350747
+        },
+        {
+          "task": "d42_service_barrier",
+          "start_ms": 3036.176816350747,
+          "end_ms": 3036.176816350747
+        },
+        {
+          "task": "l39_h3_g3_return",
+          "start_ms": 3035.913630500747,
+          "end_ms": 3035.933630500747
+        },
+        {
+          "task": "l39_h3_g1_return",
+          "start_ms": 3035.055581840953,
+          "end_ms": 3035.913630500747
+        },
+        {
+          "task": "l39_h3_g3_compute",
+          "start_ms": 3028.7306856954942,
+          "end_ms": 3035.202972051739
+        },
+        {
+          "task": "l39_h3_g1_compute",
+          "start_ms": 3028.7306856954942,
+          "end_ms": 3035.055581840953
+        },
+        {
+          "task": "l39_h3_g2_return",
+          "start_ms": 3033.6216739238184,
+          "end_ms": 3034.4797225836123
+        },
+        {
+          "task": "l39_h3_g2_compute",
+          "start_ms": 3028.7306856954942,
+          "end_ms": 3033.6216739238184
+        },
+        {
+          "task": "l39_h3_g0_return",
+          "start_ms": 3031.8809584254714,
+          "end_ms": 3032.7390070852653
+        },
+        {
+          "task": "l39_h3_g0_compute",
+          "start_ms": 3028.7306856954942,
+          "end_ms": 3031.8809584254714
+        }
+      ]
+    },
+    "stitchrail_scheduler": {
+      "raw_wall_ms": 3624.189985316849,
+      "calibrated_wall_ms": 3419.690169763463,
+      "calibration_offset_ms": 0.5447875943914369,
+      "tok_s": 2376.82351221959,
+      "sm_work_ms": 8043.263894613034,
+      "sm_work_by_gpu_ms": [
+        1900.116500336717,
+        1821.7412180870604,
+        1931.8605743268445,
+        2389.5456018623977
+      ],
+      "sm_perfect_balance_floor_ms": 1897.0507005877248,
+      "copy_work_ms": 1241.9900701030933,
+      "max_diagonals_in_flight": 2,
+      "tasks": 3126,
+      "bundle_count": 0,
+      "m16_pair_count": 0,
+      "last_tasks": [
+        {
+          "task": "l39_h3_post",
+          "start_ms": 3621.518480316849,
+          "end_ms": 3624.189985316849
+        },
+        {
+          "task": "d42_done",
+          "start_ms": 3624.189985316849,
+          "end_ms": 3624.189985316849
+        },
+        {
+          "task": "l39_h3_sum",
+          "start_ms": 3621.275294466849,
+          "end_ms": 3621.518480316849
+        },
+        {
+          "task": "l39_h3_g3_return",
+          "start_ms": 3621.255294466849,
+          "end_ms": 3621.275294466849
+        },
+        {
+          "task": "l39_h3_g1_return",
+          "start_ms": 3620.3972458070552,
+          "end_ms": 3621.255294466849
+        },
+        {
+          "task": "l39_h3_g2_return",
+          "start_ms": 3619.5391971472613,
+          "end_ms": 3620.3972458070552
+        },
+        {
+          "task": "l39_h3_g3_down",
+          "start_ms": 3617.895795422059,
+          "end_ms": 3620.244939767754
+        },
+        {
+          "task": "l39_h3_g1_down",
+          "start_ms": 3617.8790101392697,
+          "end_ms": 3620.0975495569674
+        },
+        {
+          "task": "l39_h3_g2_down",
+          "start_ms": 3617.7053479422343,
+          "end_ms": 3619.5391971472613
+        },
+        {
+          "task": "l39_h3_g3_compute",
+          "start_ms": 3613.772653411509,
+          "end_ms": 3617.895795422059
+        },
+        {
+          "task": "l39_h3_g1_compute",
+          "start_ms": 3613.772653411509,
+          "end_ms": 3617.8790101392697
+        },
+        {
+          "task": "l39_h3_g0_return",
+          "start_ms": 3616.9229261414857,
+          "end_ms": 3617.7809748012796
+        }
+      ]
+    },
+    "exploratory_noncompliant_indivisible_compute": {
+      "raw_wall_ms": 2852.1681886636943,
+      "calibrated_wall_ms": 2691.3467960289513,
+      "calibration_offset_ms": 0.5447875943914369,
+      "tok_s": 3020.0492972487837,
+      "sm_work_ms": 8043.263894613039,
+      "sm_work_by_gpu_ms": [
+        1900.116500336718,
+        1821.7412180870601,
+        1931.8605743268447,
+        2389.545601862396
+      ],
+      "sm_perfect_balance_floor_ms": 1897.050700587726,
+      "copy_work_ms": 1241.9900701030936,
+      "max_diagonals_in_flight": 2,
+      "tasks": 2486,
+      "bundle_count": 0,
+      "m16_pair_count": 0,
+      "last_tasks": [
+        {
+          "task": "l39_h3_post",
+          "start_ms": 2849.4966836636945,
+          "end_ms": 2852.1681886636943
+        },
+        {
+          "task": "d42_done",
+          "start_ms": 2852.1681886636943,
+          "end_ms": 2852.1681886636943
+        },
+        {
+          "task": "l39_h3_sum",
+          "start_ms": 2849.2534978136946,
+          "end_ms": 2849.4966836636945
+        },
+        {
+          "task": "l39_h3_g3_return",
+          "start_ms": 2849.2334978136946,
+          "end_ms": 2849.2534978136946
+        },
+        {
+          "task": "l39_h3_g1_return",
+          "start_ms": 2848.3754491539007,
+          "end_ms": 2849.2334978136946
+        },
+        {
+          "task": "l39_h3_g3_compute",
+          "start_ms": 2842.050553008442,
+          "end_ms": 2848.5228393646867
+        },
+        {
+          "task": "l39_h3_g1_compute",
+          "start_ms": 2842.050553008442,
+          "end_ms": 2848.3754491539007
+        },
+        {
+          "task": "l39_h3_g2_return",
+          "start_ms": 2846.941541236766,
+          "end_ms": 2847.79958989656
+        },
+        {
+          "task": "l39_h3_g2_compute",
+          "start_ms": 2842.050553008442,
+          "end_ms": 2846.941541236766
+        },
+        {
+          "task": "l39_h3_g0_return",
+          "start_ms": 2845.200825738419,
+          "end_ms": 2846.058874398213
+        },
+        {
+          "task": "l39_h3_g0_compute",
+          "start_ms": 2842.050553008442,
+          "end_ms": 2845.200825738419
+        },
+        {
+          "task": "l39_h3_input_g3",
+          "start_ms": 2842.030553008442,
+          "end_ms": 2842.050553008442
+        }
+      ]
+    },
+    "stitchrail_m64_m32": {
+      "raw_wall_ms": 3542.61818440247,
+      "calibrated_wall_ms": 3342.7334297631924,
+      "calibration_offset_ms": 0.5447875943914369,
+      "tok_s": 2431.5429784587423,
+      "sm_work_ms": 7928.395490825066,
+      "sm_work_by_gpu_ms": [
+        1862.802209322828,
+        1790.5315919481711,
+        1905.6928222157337,
+        2369.3688673383217
+      ],
+      "sm_perfect_balance_floor_ms": 1869.9583176028393,
+      "copy_work_ms": 1241.9900701030933,
+      "max_diagonals_in_flight": 2,
+      "tasks": 3126,
+      "bundle_count": 281,
+      "m16_pair_count": 0,
+      "last_tasks": [
+        {
+          "task": "l39_h3_post",
+          "start_ms": 3539.94667940247,
+          "end_ms": 3542.61818440247
+        },
+        {
+          "task": "d42_done",
+          "start_ms": 3542.61818440247,
+          "end_ms": 3542.61818440247
+        },
+        {
+          "task": "l39_h3_sum",
+          "start_ms": 3539.7034935524703,
+          "end_ms": 3539.94667940247
+        },
+        {
+          "task": "l39_h3_g3_return",
+          "start_ms": 3539.6834935524703,
+          "end_ms": 3539.7034935524703
+        },
+        {
+          "task": "l39_h3_g1_return",
+          "start_ms": 3538.8254448926764,
+          "end_ms": 3539.6834935524703
+        },
+        {
+          "task": "l39_h3_g2_return",
+          "start_ms": 3537.9673962328825,
+          "end_ms": 3538.8254448926764
+        },
+        {
+          "task": "l39_h3_g3_down",
+          "start_ms": 3536.3239945076803,
+          "end_ms": 3538.6731388533753
+        },
+        {
+          "task": "l39_h3_g1_down",
+          "start_ms": 3536.307209224891,
+          "end_ms": 3538.5257486425885
+        },
+        {
+          "task": "l39_h3_g2_down",
+          "start_ms": 3536.1335470278555,
+          "end_ms": 3537.9673962328825
+        },
+        {
+          "task": "l39_h3_g3_compute",
+          "start_ms": 3532.20085249713,
+          "end_ms": 3536.3239945076803
+        },
+        {
+          "task": "l39_h3_g1_compute",
+          "start_ms": 3532.20085249713,
+          "end_ms": 3536.307209224891
+        },
+        {
+          "task": "l39_h3_g0_return",
+          "start_ms": 3535.351125227107,
+          "end_ms": 3536.2091738869008
+        }
+      ]
+    },
+    "stitchrail_full": {
+      "raw_wall_ms": 3542.61818440247,
+      "calibrated_wall_ms": 3342.7334297631924,
+      "calibration_offset_ms": 0.5447875943914369,
+      "tok_s": 2431.5429784587423,
+      "sm_work_ms": 7928.395490825066,
+      "sm_work_by_gpu_ms": [
+        1862.802209322828,
+        1790.5315919481711,
+        1905.6928222157337,
+        2369.3688673383217
+      ],
+      "sm_perfect_balance_floor_ms": 1869.9583176028393,
+      "copy_work_ms": 1241.9900701030933,
+      "max_diagonals_in_flight": 2,
+      "tasks": 3126,
+      "bundle_count": 281,
+      "m16_pair_count": 0,
+      "last_tasks": [
+        {
+          "task": "l39_h3_post",
+          "start_ms": 3539.94667940247,
+          "end_ms": 3542.61818440247
+        },
+        {
+          "task": "d42_done",
+          "start_ms": 3542.61818440247,
+          "end_ms": 3542.61818440247
+        },
+        {
+          "task": "l39_h3_sum",
+          "start_ms": 3539.7034935524703,
+          "end_ms": 3539.94667940247
+        },
+        {
+          "task": "l39_h3_g3_return",
+          "start_ms": 3539.6834935524703,
+          "end_ms": 3539.7034935524703
+        },
+        {
+          "task": "l39_h3_g1_return",
+          "start_ms": 3538.8254448926764,
+          "end_ms": 3539.6834935524703
+        },
+        {
+          "task": "l39_h3_g2_return",
+          "start_ms": 3537.9673962328825,
+          "end_ms": 3538.8254448926764
+        },
+        {
+          "task": "l39_h3_g3_down",
+          "start_ms": 3536.3239945076803,
+          "end_ms": 3538.6731388533753
+        },
+        {
+          "task": "l39_h3_g1_down",
+          "start_ms": 3536.307209224891,
+          "end_ms": 3538.5257486425885
+        },
+        {
+          "task": "l39_h3_g2_down",
+          "start_ms": 3536.1335470278555,
+          "end_ms": 3537.9673962328825
+        },
+        {
+          "task": "l39_h3_g3_compute",
+          "start_ms": 3532.20085249713,
+          "end_ms": 3536.3239945076803
+        },
+        {
+          "task": "l39_h3_g1_compute",
+          "start_ms": 3532.20085249713,
+          "end_ms": 3536.307209224891
+        },
+        {
+          "task": "l39_h3_g0_return",
+          "start_ms": 3535.351125227107,
+          "end_ms": 3536.2091738869008
+        }
+      ]
+    }
+  },
+  "component_decision": {
+    "status": "rejected-scheduler-replay-gate",
+    "scheduler_gate_ms": 2700.0,
+    "stretch_replay_gate_ms": 2250.0,
+    "component_minimum_ms": 20.0,
+    "scheduler_passes": false,
+    "m64_m32_net_benefit_ms": 76.95674000027066,
+    "m64_m32_component_passes": true,
+    "m64_m32_enabled": false,
+    "m16_net_benefit_ms": 0.0,
+    "m16_component_passes": false,
+    "m16_enabled": false,
+    "runtime_implementation_enabled": false,
+    "noncompliant_indivisible_compute_wall_ms": 2691.3467960289513,
+    "noncompliant_indivisible_compute_reason": "cannot enforce pre-before-down-before-gate-up priority",
+    "selected_wall_ms": 2867.465188333333,
+    "selected_tok_s": 2834.559259191658,
+    "stretch_feasible": false
+  },
+  "manifest": "/home/arian/llama.cpp-q36-moe/.worktrees/stitchrail-20260725/results/qwen36-35b-moe-pp-20260721/stitchrail-20260725/stitchrail-v1.manifest.json",
+  "manifest_sha256": "23bf11bb9a1e8ba0508c1c939a4519d2fbdc4a619591af13f5140466a3d3a514",
+  "memory": {
+    "planned_shadow_gate_up_bytes_per_gpu": 16646144,
+    "metadata_bytes_per_gpu": 0,
+    "incremental_bytes_per_gpu": 0,
+    "incremental_limit_bytes_per_gpu": 33006589
+  }
+}

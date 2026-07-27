@@ -1,5 +1,11 @@
 # llama.cpp
 
+> [!NOTE]
+> This private research branch preserves the exact four-P100 diagonal-wave
+> checkpoint measured at 2912.264 prompt tokens/s. Start with
+> [the checkpoint guide](DIAGONAL-WAVE-P100-2900.md). The path is opt-in,
+> rig-qualified, and not an upstream llama.cpp default.
+
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)

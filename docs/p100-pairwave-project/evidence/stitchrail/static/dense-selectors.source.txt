@@ -1,0 +1,101 @@
+            cublasGemmAlgo_t algorithm =
+                    CUBLAS_GEMM_DEFAULT_TENSOR_OP;
+            int selector_index = -1;
+            const char * aw_dense_selectors =
+                    getenv("GGML_CUDA_AW_DENSE_SELECTORS");
+#if defined(CUDART_VERSION) && defined(CUBLAS_VERSION)
+            constexpr bool aw_exact_dense_toolkit =
+                    CUDART_VERSION == 12080 &&
+                    CUBLAS_VERSION == 120803;
+#else
+            constexpr bool aw_exact_dense_toolkit = false;
+#endif
+            const bool aw_exact_dense_signature =
+                    aw_exact_dense_toolkit &&
+                    ggml_cuda_aw_cublas_runtime_version(
+                        ctx.cublas_handle(id), id) == 120803 &&
+                    force_compute_type.fp32 &&
+                    cc == GGML_CUDA_CC_PASCAL &&
+                    id == ctx.device &&
+                    stream ==
+                        ctx.streams[id][ctx.curr_stream_no] &&
+                    src0->type == GGML_TYPE_Q8_0 &&
+                    (src1->type == GGML_TYPE_F32 ||
+                     src1->type == GGML_TYPE_F16) &&
+                    dst->type == GGML_TYPE_F32 &&
+                    src0->ne[2] == 1 && src0->ne[3] == 1 &&
+                    src1->ne[2] == 1 && src1->ne[3] == 1 &&
+                    dst->ne[2] == 1 && dst->ne[3] == 1 &&
+                    ne00 == ne10 &&
+                    row_low == 0 &&
+                    row_high == src0->ne[1] &&
+                    row_diff == ne0 &&
+                    ldc == row_diff &&
+                    src1_ncols == src1->ne[1] &&
+                    ggml_is_contiguous(src0) &&
+                    ggml_is_contiguous(src1) &&
+                    ggml_is_contiguous(dst) &&
+                    dst->op_params[0] == GGML_PREC_DEFAULT &&
+                    (reinterpret_cast<uintptr_t>(src0_ptr) & 15) == 0 &&
+                    (reinterpret_cast<uintptr_t>(src1_ptr) & 15) == 0 &&
+                    (reinterpret_cast<uintptr_t>(dst_dd_i) & 15) == 0;
+            if (aw_dense_selectors != nullptr &&
+                    strcmp(aw_dense_selectors, "exact") == 0 &&
+                    aw_exact_dense_signature) {
+                int selector = -1;
+                if (src1_ncols == 2032) {
+                    if (row_diff == 8192 && ne10 == 2048) {
+                        selector = 6;
+                        selector_index = 0;
+                    } else if (row_diff == 2048 && ne10 == 4096) {
+                        selector = 10;
+                        selector_index = 1;
+                    } else if (row_diff == 4096 && ne10 == 2048) {
+                        selector = 5;
+                        selector_index = 2;
+                    } else if (row_diff == 2048 && ne10 == 512) {
+                        selector = 6;
+                        selector_index = 3;
+                    } else if (row_diff == 512 && ne10 == 2048) {
+                        selector = 3;
+                        selector_index = 4;
+                    } else if (row_diff == 32 && ne10 == 2048) {
+                        selector = 7;
+                        selector_index = 5;
+                    }
+                } else if (src1_ncols == 512) {
+                    if (row_diff == 8192 && ne10 == 2048) {
+                        selector = 6;
+                        selector_index = 6;
+                    } else if (row_diff == 512 && ne10 == 2048) {
+                        selector = 8;
+                        selector_index = 7;
+                    }
+                }
+                if (selector >= 0) {
+                    algorithm =
+                            static_cast<cublasGemmAlgo_t>(selector);
+                }
+            }
+            if (selector_index >= 0) {
+                static_assert(GGML_CUDA_MAX_DEVICES <= 16);
+                static std::array<std::atomic<uint16_t>, 8>
+                        reported{};
+                const uint16_t bit =
+                        (uint16_t) 1u << id;
+                if ((reported[selector_index].fetch_or(bit) &
+                        bit) == 0) {
+                    fprintf(stderr,
+                            "AffinityWave: exact dense selector device=%d algorithm=%d M=%" PRId64 " N=%" PRId64 " K=%" PRId64 "\n",
+                            id, (int) algorithm, row_diff,
+                            src1_ncols, ne10);
+                }
+            }
+            CUBLAS_CHECK(
+                cublasGemmEx(ctx.cublas_handle(id), CUBLAS_OP_T, CUBLAS_OP_N,
+                        row_diff, src1_ncols, ne10,
+                        &alpha, src0_ptr,  CUDA_R_16F, ne00,
+                                src1_ptr,  CUDA_R_16F, ne10,
+                        &beta,   dst_dd_i, CUDA_R_32F, ldc,
+                        CUBLAS_COMPUTE_32F,
+                        algorithm));
