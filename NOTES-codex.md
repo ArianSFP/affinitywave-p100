@@ -43,3 +43,18 @@
   confidence pruning `p_min=0.5` remained exact but reached only 75.3 tok/s
   chat and was not adopted. All three tests used the same watched four-P100
   server probe and Q8_0 target weights.
+
+- 2026-09-07: Implemented the five selected P100 patch priorities in order:
+  Pascal `vmad` DP4A fallback, wider pre-Turing F32 MMVF coverage, four-row
+  MoE MMVQ blocks, fused GDN beta-sigmoid plus deferred GET_ROWS state
+  gathering and small-row CONCAT fusion, and a Pascal-safe partial TOP_K path
+  for large vocabularies with k <= 16. Added environment kill switches for
+  the new fusions/selector path.
+- The final CUDA rebuild completed. The final binary passed all 525 CUDA0
+  TOP_K backend cases on Tesla P100, including large 151936/202048/262144/
+  524288-column inputs, multi-row cases, ties, and k through 16; the Python
+  serving harness passed 12/12 tests.
+- The watched four-P100 `p100-patches-all-20260907` DSpark n=2 probe passed.
+  Its 17 probe records had byte-identical content and token arrays to the
+  prior self-contained DSpark n=2 run; the coding chat response was identical
+  and measured 80.6 tok/s in this run. No commit, push, or PR was made.

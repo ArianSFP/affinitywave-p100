@@ -740,9 +740,19 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #if __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
     return __dp4a(a, b, c);
 #else // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
+#if __CUDA_ARCH__ >= 600
+    int r = c;
+    asm("vmad.s32.s32.s32 %0, %1.b0, %2.b0, %0;\n\t"
+        "vmad.s32.s32.s32 %0, %1.b1, %2.b1, %0;\n\t"
+        "vmad.s32.s32.s32 %0, %1.b2, %2.b2, %0;\n\t"
+        "vmad.s32.s32.s32 %0, %1.b3, %2.b3, %0;"
+        : "+r"(r) : "r"(a), "r"(b));
+    return r;
+#else
     const int8_t * a8 = (const int8_t *) &a;
     const int8_t * b8 = (const int8_t *) &b;
     return c + a8[0]*b8[0] + a8[1]*b8[1] + a8[2]*b8[2] + a8[3]*b8[3];
+#endif
 #endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A || defined(GGML_USE_MUSA)
 
 #endif // defined(GGML_USE_HIP)
@@ -1430,6 +1440,22 @@ struct ggml_backend_cuda_context {
     size_t cublas_workspace_sizes[GGML_CUDA_MAX_DEVICES] = {0};
 
     int curr_stream_no = 0;
+
+    const ggml_tensor * gdn_gather_node  = nullptr;
+    const ggml_tensor * gdn_gather_owner = nullptr;
+    int32_t *           gdn_rows_scratch = nullptr;
+    size_t              gdn_rows_scratch_n = 0;
+    const ggml_tensor * gdn_rows_src = nullptr;
+
+    void gdn_gather_clear() {
+        gdn_gather_node  = nullptr;
+        gdn_gather_owner = nullptr;
+    }
+
+    void gdn_gather_reset_graph() {
+        gdn_gather_clear();
+        gdn_rows_src = nullptr;
+    }
 
 #ifdef USE_CUDA_GRAPH
     // Map from first_node_ptr to cuda_graph - allows multiple graphs per context

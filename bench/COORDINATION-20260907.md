@@ -51,3 +51,9 @@ DSpark confidence pruning next.
 DSpark n=2 with `p_min=0.5` completed and remained exact, but chat was 75.3
 tok/s with no balanced-suite gain; it is rejected. The current safe winner is
 therefore unchanged: DSpark n=2, CUDA0 draft, ubatch=512.
+
+2026-09-07: Implemented the selected P100 patch priorities 1-5 in order. The
+final build passed 525/525 CUDA0 TOP_K cases, including large vocab and
+multi-row cases. The watched four-P100 all-patches DSpark n=2 probe passed with
+byte-identical tokens/content against the prior DSpark run; coding chat was
+80.6 tok/s. No commit, push, or PR.
