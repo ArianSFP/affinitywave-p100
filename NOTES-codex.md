@@ -301,3 +301,13 @@ normal arithmetic. Do not implement a blind small-token fallback.
   no remaining GPU compute clients. The higher internal service-phase timing
   (~2967 tok/s) is diagnostic only; it is not substituted for `llama-bench`'s
   qualified rate. No new PPL/byte-identity gate was run in this rate check.
+
+## Pascal CUDA decode paths / 2026-09-07
+
+- Integrated the parallel P100 decode-path work: Pascal `vmad` DP4A fallback,
+  wider pre-Turing F32 MMVF coverage, four-row MoE MMVQ blocks, fused GDN
+  beta-sigmoid and deferred state gathering, small-row CONCAT fusion, and a
+  Pascal-safe partial TOP_K path for large vocabularies with `k <= 16`.
+- The parallel agent reported 525/525 CUDA0 TOP_K cases and byte-identical
+  watched DSpark n=2 serving outputs; these are inherited reports and should
+  be rechecked on this combined branch before making a new rate claim.

@@ -139,8 +139,189 @@ static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
     }
 }
 
+#define CUDA_CONCAT_ROWS_MAX_NE0 8
+#define CUDA_CONCAT_ROWS_SRC(c) ((c) < ne00 ? (x + (int64_t) (c)*nb00) : (y + (int64_t) ((c) - ne00)*nb10))
+
+template <typename T, int NE0, bool VEC16>
+static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
+    concat_rows(const char * __restrict__ src0, const char * __restrict__ src1, char * __restrict__ dst,
+                const int ne00, const int nrows,
+                const int64_t nb00, const int64_t nb01, const int64_t nb10, const int64_t nb11,
+                const int64_t nb0, const int64_t nb1) {
+    ggml_cuda_pdl_lc();
+    const int row = blockIdx.x*blockDim.x + threadIdx.x;
+    if (row >= nrows) {
+        return;
+    }
+    const char * x = src0 + (int64_t) row*nb01;
+    const char * y = src1 + (int64_t) row*nb11;
+    char * d = dst + (int64_t) row*nb1;
+    ggml_cuda_pdl_sync();
+    if constexpr (VEC16) {
+        int4 v;
+        v.x = *(const int *) CUDA_CONCAT_ROWS_SRC(0);
+        v.y = *(const int *) CUDA_CONCAT_ROWS_SRC(1);
+        v.z = *(const int *) CUDA_CONCAT_ROWS_SRC(2);
+        v.w = *(const int *) CUDA_CONCAT_ROWS_SRC(3);
+        *(int4 *) d = v;
+    } else {
+#pragma unroll
+        for (int c = 0; c < NE0; ++c) {
+            *(T *) (d + (int64_t) c*nb0) = *(const T *) CUDA_CONCAT_ROWS_SRC(c);
+        }
+    }
+}
+
+template <typename T, int NE0, bool VEC16>
+static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
+    concat_rows_gather(const char * __restrict__ cache, const int32_t * __restrict__ rows,
+                       const char * __restrict__ src1, char * __restrict__ dst, char * __restrict__ gdst,
+                       const int ne00, const int nrows, const int64_t crow,
+                       const int64_t nb00, const int64_t nb01, const int64_t nb10, const int64_t nb11,
+                       const int64_t nb0, const int64_t nb1) {
+    ggml_cuda_pdl_lc();
+    const int row = blockIdx.x*blockDim.x + threadIdx.x;
+    if (row >= nrows) {
+        return;
+    }
+    const char * x = cache + (int64_t) rows[0]*crow + (int64_t) row*nb01;
+    const char * y = src1 + (int64_t) row*nb11;
+    char * d = dst + (int64_t) row*nb1;
+    char * g = gdst + (int64_t) row*nb01;
+    ggml_cuda_pdl_sync();
+    if constexpr (VEC16) {
+        int4 v;
+        v.x = *(const int *) CUDA_CONCAT_ROWS_SRC(0);
+        v.y = *(const int *) CUDA_CONCAT_ROWS_SRC(1);
+        v.z = *(const int *) CUDA_CONCAT_ROWS_SRC(2);
+        v.w = *(const int *) CUDA_CONCAT_ROWS_SRC(3);
+        *(int4 *) d = v;
+        if (0 < ne00) { *(int *) (g) = v.x; }
+        if (1 < ne00) { *(int *) (g + nb00) = v.y; }
+        if (2 < ne00) { *(int *) (g + 2*nb00) = v.z; }
+        if (3 < ne00) { *(int *) (g + 3*nb00) = v.w; }
+    } else {
+#pragma unroll
+        for (int c = 0; c < NE0; ++c) {
+            const T val = *(const T *) CUDA_CONCAT_ROWS_SRC(c);
+            *(T *) (d + (int64_t) c*nb0) = val;
+            if (c < ne00) {
+                *(T *) (g + (int64_t) c*nb00) = val;
+            }
+        }
+    }
+}
+
+static bool concat_rows_vec16(const ggml_tensor * dst) {
+    const size_t ts = ggml_type_size(dst->type);
+    return dst->ne[0]*ts == 16 && (size_t) dst->nb[0] == ts &&
+           dst->nb[1] % 16 == 0 && ((uintptr_t) dst->data) % 16 == 0;
+}
+
+static bool concat_rows_eligible(const ggml_tensor * src0, const ggml_tensor * src1,
+                                 const ggml_tensor * dst, int dim, bool for_gather) {
+    static const bool disable = getenv("GGML_CUDA_DISABLE_CONCAT_ROWS") != nullptr &&
+                                std::atoi(getenv("GGML_CUDA_DISABLE_CONCAT_ROWS"));
+    if (disable || dim != 0 || ggml_is_quantized(src0->type) || ggml_type_size(dst->type) != 4) {
+        return false;
+    }
+    const int64_t ne0 = dst->ne[0];
+    const int64_t ne00 = src0->ne[0];
+    if (ne0 < 2 || ne0 > CUDA_CONCAT_ROWS_MAX_NE0 || ne00 < 1 || ne00 >= ne0) {
+        return false;
+    }
+    if (!for_gather && !concat_rows_vec16(dst)) {
+        return false;
+    }
+    auto rowform = [](const ggml_tensor * t) {
+        return (t->ne[2] == 1 || (uint64_t) t->nb[2] == (uint64_t) t->ne[1]*t->nb[1]) &&
+               (t->ne[3] == 1 || (uint64_t) t->nb[3] == (uint64_t) t->ne[2]*t->nb[2]);
+    };
+    if (!rowform(src0) || !rowform(src1) || !rowform(dst)) {
+        return false;
+    }
+    if (src0->ne[1] != dst->ne[1] || src0->ne[2] != dst->ne[2] || src0->ne[3] != dst->ne[3] ||
+        src1->ne[1] != dst->ne[1] || src1->ne[2] != dst->ne[2] || src1->ne[3] != dst->ne[3]) {
+        return false;
+    }
+    const int64_t nrows = dst->ne[1]*dst->ne[2]*dst->ne[3];
+    return nrows > 0 && nrows <= INT_MAX;
+}
+
 template <typename T>
-static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, int dim, cudaStream_t stream) {
+static bool concat_rows_cuda(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst,
+                             int dim, cudaStream_t stream, const ggml_cuda_concat_gather * gather) {
+    if constexpr (sizeof(T) != 4) {
+        GGML_UNUSED(src0); GGML_UNUSED(src1); GGML_UNUSED(dst); GGML_UNUSED(dim); GGML_UNUSED(stream);
+        GGML_ASSERT(gather == nullptr);
+        return false;
+    } else {
+        if (!concat_rows_eligible(src0, src1, dst, dim, gather != nullptr)) {
+            return false;
+        }
+        const int64_t ne0 = dst->ne[0];
+        const int64_t ne00 = src0->ne[0];
+        const int64_t nrows = dst->ne[1]*dst->ne[2]*dst->ne[3];
+        const bool vec16 = concat_rows_vec16(dst);
+        const int block = (vec16 && gather == nullptr) ? CUDA_CONCAT_BLOCK_SIZE : 64;
+        const int nblk = (int) ((nrows + block - 1) / block);
+        const int ne00_i = (int) ne00;
+        const int nrow_i = (int) nrows;
+        const char * s0 = (const char *) src0->data;
+        const char * s1 = (const char *) src1->data;
+        char * d = (char *) dst->data;
+#define CUDA_CONCAT_ROWS_LAUNCH(NE0, VEC) \
+        do { \
+            const ggml_cuda_kernel_launch_params lp = ggml_cuda_kernel_launch_params(nblk, block, 0, stream); \
+            if (gather != nullptr) { \
+                ggml_cuda_kernel_launch(concat_rows_gather<T, NE0, VEC>, lp, gather->base, gather->rows, s1, d, gather->gdst, \
+                    ne00_i, nrow_i, gather->row_stride, (int64_t) src0->nb[0], (int64_t) src0->nb[1], \
+                    (int64_t) src1->nb[0], (int64_t) src1->nb[1], (int64_t) dst->nb[0], (int64_t) dst->nb[1]); \
+            } else { \
+                ggml_cuda_kernel_launch(concat_rows<T, NE0, VEC>, lp, s0, s1, d, ne00_i, nrow_i, \
+                    (int64_t) src0->nb[0], (int64_t) src0->nb[1], (int64_t) src1->nb[0], (int64_t) src1->nb[1], \
+                    (int64_t) dst->nb[0], (int64_t) dst->nb[1]); \
+            } \
+        } while (0)
+        switch (ne0) {
+            case 2: CUDA_CONCAT_ROWS_LAUNCH(2, false); break;
+            case 3: CUDA_CONCAT_ROWS_LAUNCH(3, false); break;
+            case 4: if (vec16) { CUDA_CONCAT_ROWS_LAUNCH(4, true); } else { CUDA_CONCAT_ROWS_LAUNCH(4, false); } break;
+            case 5: CUDA_CONCAT_ROWS_LAUNCH(5, false); break;
+            case 6: CUDA_CONCAT_ROWS_LAUNCH(6, false); break;
+            case 7: CUDA_CONCAT_ROWS_LAUNCH(7, false); break;
+            case 8: CUDA_CONCAT_ROWS_LAUNCH(8, false); break;
+            default: return false;
+        }
+#undef CUDA_CONCAT_ROWS_LAUNCH
+        return true;
+    }
+}
+
+bool ggml_cuda_concat_can_fuse_gather(const ggml_tensor * concat, const ggml_tensor * gr) {
+    static const bool disable = getenv("GGML_CUDA_DISABLE_FUSE_CONCAT_GATHER") != nullptr &&
+                                std::atoi(getenv("GGML_CUDA_DISABLE_FUSE_CONCAT_GATHER"));
+    if (disable || concat->op != GGML_OP_CONCAT || gr->op != GGML_OP_GET_ROWS) {
+        return false;
+    }
+    const int dim = ((const int32_t *) concat->op_params)[0];
+    if (!concat_rows_eligible(concat->src[0], concat->src[1], concat, dim, true)) {
+        return false;
+    }
+    return gr->type == GGML_TYPE_F32 && gr->src[0] != nullptr && gr->src[1] != nullptr &&
+           gr->src[0]->type == GGML_TYPE_F32 && gr->src[1]->type == GGML_TYPE_I32 &&
+           !(gr->flags & GGML_TENSOR_FLAG_OUTPUT) && ggml_is_contiguous(gr) && gr->ne[2] == 1 && gr->ne[3] == 1 &&
+           ggml_nelements(gr->src[1]) == 1 && ggml_is_contiguous_rows(gr->src[0]) &&
+           gr->src[0]->nb[0] == sizeof(float) && concat->src[0]->nb[0] == sizeof(float) && gr->data != nullptr;
+}
+
+template <typename T>
+static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, int dim, cudaStream_t stream,
+                        const ggml_cuda_concat_gather * gather = nullptr) {
+    if (concat_rows_cuda<T>(src0, src1, dst, dim, stream, gather)) {
+        return;
+    }
+    GGML_ASSERT(gather == nullptr);
     if (ggml_is_contiguous(src0) && ggml_is_contiguous(src1)) {
         const T * src0_d = (const T *) src0->data;
         const T * src1_d = (const T *) src1->data;
@@ -202,6 +383,19 @@ void ggml_cuda_op_concat(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     const int32_t dim = ((int32_t *) dst->op_params)[0];
 
+    ggml_cuda_concat_gather gather;
+    bool has_gather = false;
+    if (ctx.gdn_gather_owner == dst && ctx.gdn_gather_node != nullptr) {
+        const ggml_tensor * gr = ctx.gdn_gather_node;
+        gather.base = (const char *) gr->src[0]->data;
+        gather.rows = ctx.gdn_rows_scratch;
+        gather.row_stride = (int64_t) gr->src[0]->nb[1];
+        gather.gdst = (char *) gr->data;
+        ctx.gdn_gather_clear();
+        has_gather = gather.base != nullptr && gather.rows != nullptr && gather.gdst != nullptr && gather.row_stride > 0;
+        GGML_ASSERT(has_gather);
+    }
+
     GGML_ASSERT(src0->type == src1->type);
     GGML_ASSERT(dst->type  == src0->type);
     GGML_ASSERT(!ggml_is_quantized(src0->type));
@@ -215,7 +409,7 @@ void ggml_cuda_op_concat(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             concat_cuda<uint16_t>(src0, src1, dst, dim, stream);
             break;
         case 4:
-            concat_cuda<uint32_t>(src0, src1, dst, dim, stream);
+            concat_cuda<uint32_t>(src0, src1, dst, dim, stream, has_gather ? &gather : nullptr);
             break;
         case 8:
             concat_cuda<uint64_t>(src0, src1, dst, dim, stream);

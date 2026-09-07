@@ -7,7 +7,19 @@ struct ggml_cuda_gated_delta_net_fused_cache {
     int64_t slot_stride; // between rollback slots (0 when K==1)
 };
 
+struct ggml_cuda_gated_delta_net_fused_gather {
+    const float * base       = nullptr;
+    const int32_t * rows     = nullptr;
+    int64_t row_stride       = 0;
+    float * gather_dst       = nullptr;
+};
+
 void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
+void ggml_cuda_op_gated_delta_net_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst,
+                                        const ggml_cuda_gated_delta_net_fused_cache * cache,
+                                        bool fuse_beta_sigmoid,
+                                        const ggml_cuda_gated_delta_net_fused_gather * gather = nullptr);
 
 // same op, but writes the snapshot(s) into the cache instead of dst (see ggml_cuda_try_gdn_cache_fusion)
 void ggml_cuda_op_gated_delta_net_fused_cache(ggml_backend_cuda_context & ctx, ggml_tensor * dst,
