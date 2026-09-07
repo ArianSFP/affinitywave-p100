@@ -5,6 +5,45 @@
 
 #include <cstdint>
 #include <type_traits>
+#include <array>
+
+// P100/SM60 decode tuning.  The production Qwen3.6 target uses Q8_0 and
+// speculative verification produces 2..8 columns; these launch parameters
+// were measured on the four-P100 serving rig.
+#ifndef GGML_CUDA_SM60_MMVQ_NWARPS
+#define GGML_CUDA_SM60_MMVQ_NWARPS 4
+#endif
+#ifndef GGML_CUDA_SM60_MMVQ_ROWS_PER_BLOCK
+#define GGML_CUDA_SM60_MMVQ_ROWS_PER_BLOCK 4
+#endif
+#ifndef GGML_CUDA_SM60_MMVQ_NWARPS_MID
+#define GGML_CUDA_SM60_MMVQ_NWARPS_MID 4
+#endif
+#ifndef GGML_CUDA_SM60_MMVQ_NWARPS_HI
+#define GGML_CUDA_SM60_MMVQ_NWARPS_HI 2
+#endif
+#ifndef GGML_CUDA_SM60_MMVQ_ROWS_HI
+#define GGML_CUDA_SM60_MMVQ_ROWS_HI 6
+#endif
+
+struct ggml_cuda_mmvq_q8_1_rolling_cache {
+    const ggml_tensor * identity = nullptr;
+    const void * src_data = nullptr;
+    int64_t ne[4] = {};
+    size_t nb[4] = {};
+    char * q8_1_data = nullptr;
+};
+
+static thread_local std::array<ggml_cuda_mmvq_q8_1_rolling_cache, GGML_CUDA_MAX_DEVICES> ggml_cuda_mmvq_q8_1_cache;
+
+static const ggml_tensor * ggml_cuda_mmvq_q8_1_identity(const ggml_tensor * tensor) {
+    const ggml_tensor * current = tensor;
+    while (current->view_src || ((current->op == GGML_OP_RESHAPE || current->op == GGML_OP_VIEW ||
+            current->op == GGML_OP_PERMUTE || current->op == GGML_OP_TRANSPOSE) && current->src[0])) {
+        current = current->view_src ? current->view_src : current->src[0];
+    }
+    return current;
+}
 
 typedef float (*vec_dot_q_cuda_t)(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs);
 
@@ -66,6 +105,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
 
 enum mmvq_parameter_table_id {
     MMVQ_PARAMETERS_GENERIC = 0,
+    MMVQ_PARAMETERS_PASCAL_SM60,
     MMVQ_PARAMETERS_TURING,
     MMVQ_PARAMETERS_GCN,
     MMVQ_PARAMETERS_RDNA2,
@@ -85,6 +125,8 @@ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
     return MMVQ_PARAMETERS_GCN;
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING && __CUDA_ARCH__ < GGML_CUDA_CC_AMPERE
     return MMVQ_PARAMETERS_TURING;
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_PASCAL
+    return MMVQ_PARAMETERS_PASCAL_SM60;
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
     return MMVQ_PARAMETERS_GB10;
 #else
@@ -107,6 +149,9 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
     }
     if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_TURING && ggml_cuda_highest_compiled_arch(cc) < GGML_CUDA_CC_AMPERE) {
         return MMVQ_PARAMETERS_TURING;
+    }
+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_PASCAL) {
+        return MMVQ_PARAMETERS_PASCAL_SM60;
     }
     if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_DGX_SPARK) {
         return MMVQ_PARAMETERS_GB10;
@@ -407,6 +452,18 @@ static constexpr __device__ int get_mmvq_mmid_max_batch_for_device() {
 }
 
 static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_dst, mmvq_parameter_table_id table_id, bool small_k = false, bool halve_iters = false) {
+    if (table_id == MMVQ_PARAMETERS_PASCAL_SM60) {
+        if (ncols_dst == 1) {
+            return GGML_CUDA_SM60_MMVQ_NWARPS;
+        }
+        if (ncols_dst >= 2 && ncols_dst <= 4) {
+            return GGML_CUDA_SM60_MMVQ_NWARPS_MID;
+        }
+        if (ncols_dst >= 5 && ncols_dst <= 8) {
+            return GGML_CUDA_SM60_MMVQ_NWARPS_HI;
+        }
+        return 1;
+    }
     if (table_id == MMVQ_PARAMETERS_GENERIC) {
         switch (ncols_dst) {
             case 1:
@@ -533,8 +590,16 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
     return 1;
 }
 
-static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
-    if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
+static constexpr __host__ __device__ int calc_rows_per_block(ggml_type type, int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
+    if (table_id == MMVQ_PARAMETERS_PASCAL_SM60 && type == GGML_TYPE_Q8_0 && !small_k) {
+        if (ncols_dst == 1) {
+            return GGML_CUDA_SM60_MMVQ_ROWS_PER_BLOCK;
+        }
+        if (ncols_dst >= 2 && ncols_dst <= 8) {
+            return GGML_CUDA_SM60_MMVQ_ROWS_HI;
+        }
+    }
+    if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_PASCAL_SM60 || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
         switch (ncols_dst) {
             case 1:
                 return small_k ? nwarps : 1;
@@ -572,7 +637,7 @@ static __global__ void mul_mat_vec_q(
     constexpr int vdr = get_vdr_mmvq(type);
     constexpr mmvq_parameter_table_id table_id = get_device_table_id();
     constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
-    constexpr int rows_per_cuda_block = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    constexpr int rows_per_cuda_block = calc_rows_per_block(type, ncols_dst, table_id, small_k, nwarps);
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
 
     constexpr vec_dot_q_cuda_t vec_dot_q_cuda = get_vec_dot_q_cuda(type);
@@ -937,7 +1002,7 @@ static std::pair<dim3, dim3> calc_launch_params(
         const int ncols_dst, const int nrows_x, const int nchannels_dst, const int nsamples_or_ntokens,
         const int warp_size, const mmvq_parameter_table_id table_id, const bool small_k = false, const bool halve_iters = false) {
     const int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
-    const int rpb = calc_rows_per_block(ncols_dst, table_id, small_k, nwarps);
+    const int rpb = calc_rows_per_block(type, ncols_dst, table_id, small_k, nwarps);
     const int64_t nblocks = (nrows_x + rpb - 1) / rpb;
     const dim3 block_nums(nblocks, nchannels_dst, nsamples_or_ntokens);
     const dim3 block_dims(warp_size, nwarps, 1);
@@ -1436,11 +1501,33 @@ void ggml_cuda_mul_mat_vec_q(
 
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
     ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
-    {
+    static const bool q8_1_dedup_enabled = []() {
+        const char * value = getenv("GGML_CUDA_Q8_1_DEDUP");
+        return value != nullptr && std::atoi(value) != 0;
+    }();
+    auto & q8_1_cache = ggml_cuda_mmvq_q8_1_cache[ctx.device];
+    const ggml_tensor * q8_1_identity = ggml_cuda_mmvq_q8_1_identity(src1);
+    bool q8_1_cache_hit = q8_1_dedup_enabled && q8_1_cache.identity == q8_1_identity &&
+        q8_1_cache.src_data == src1->data && q8_1_cache.q8_1_data == src1_q8_1.get();
+    for (int i = 0; i < 4 && q8_1_cache_hit; ++i) {
+        q8_1_cache_hit = q8_1_cache.ne[i] == src1->ne[i] && q8_1_cache.nb[i] == src1->nb[i];
+    }
+
+    if (!q8_1_cache_hit) {
         const int64_t s11 = src1->nb[1] / ts_src1;
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
         quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+    }
+
+    if (q8_1_dedup_enabled) {
+        q8_1_cache.identity = q8_1_identity;
+        q8_1_cache.src_data = src1->data;
+        q8_1_cache.q8_1_data = src1_q8_1.get();
+        for (int i = 0; i < 4; ++i) {
+            q8_1_cache.ne[i] = src1->ne[i];
+            q8_1_cache.nb[i] = src1->nb[i];
+        }
     }
 
     const int64_t s01 = src0->nb[1] / ts_src0;

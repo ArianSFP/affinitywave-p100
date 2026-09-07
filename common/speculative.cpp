@@ -2492,6 +2492,12 @@ common_params common_base_params_to_speculative(const common_params & params) {
             return t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
         });
     if (has_block_draft) {
+        // DFlash/DSpark build a vocabulary-wide in-graph argmax for their
+        // block-internal conditioning path.  Tensor-parallel Meta layouts
+        // cannot represent that reduction; the draft model is independent
+        // from the target, so keep its graph on ordinary device buffers.
+        result.split_mode = LLAMA_SPLIT_MODE_LAYER;
+
         // per-seq output positions: DFlash decodes anchor + n_max masks (n_max + 1); DSpark n_max -> +1 covers both
         const int32_t per_seq = std::max(1, params_spec.n_max + 1);
         result.n_outputs_max = params.n_parallel * per_seq;
@@ -2542,7 +2548,7 @@ common_speculative_init_result::common_speculative_init_result(
         model_path = params.speculative.draft.mparams.path;
         LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
 
-        llama_model * model_dft = llama_model_load_from_file(params.model.path.c_str(), mparams);
+        llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
         if (model_dft == NULL) {
             LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
             return;

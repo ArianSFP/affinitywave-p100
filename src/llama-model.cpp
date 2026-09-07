@@ -418,6 +418,10 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
 
     static const std::regex pattern_output_weight("output\\.weight");
     static const std::regex pattern_output_bias  ("output\\.bias");
+    // DSpark's Markov head produces a vocabulary-sized bias which is added to
+    // the target LM-head result.  Split its columns like output.weight so the
+    // two operands have the same tensor-parallel layout.
+    static const std::regex pattern_dspark_markov_w2("markov_w2\\.weight");
 
     struct tensor_config {
         ggml_backend_meta_split_axis axis;
@@ -578,6 +582,9 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         }
 
         // output
+        if (std::regex_match(tensor_name, pattern_dspark_markov_w2)) {
+            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1);
+        }
         if (std::regex_match(tensor_name, pattern_output_weight)) {
             if (is_dsv4) {
                 return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);

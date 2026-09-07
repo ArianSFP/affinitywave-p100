@@ -4401,10 +4401,19 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
 
     if (graph->graph == nullptr) {
         if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA) {
-            if (!graph->disable_due_to_gpu_arch) {
-                GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
+            static const bool force_graphs_pre_ampere = getenv("GGML_CUDA_GRAPHS_PRE_AMPERE") != nullptr;
+            if (force_graphs_pre_ampere) {
+                static bool logged = false;
+                if (!logged) {
+                    GGML_LOG_INFO("%s: GGML_CUDA_GRAPHS_PRE_AMPERE set - enabling CUDA graphs on pre-Ampere GPU (experimental)\n", __func__);
+                    logged = true;
+                }
+            } else {
+                if (!graph->disable_due_to_gpu_arch) {
+                    GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
+                }
+                graph->disable_due_to_gpu_arch = true;
             }
-            graph->disable_due_to_gpu_arch = true;
         }
     }
 
