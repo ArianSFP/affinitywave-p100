@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Isolated four-P100 jobs, with a lock and watchdog scoped to our child."""
 import argparse
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
@@ -95,6 +96,8 @@ def main():
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--debugger', action='store_true')
     parser.add_argument('--profile', action='store_true')
+    parser.add_argument('--verbose', action='store_true',
+                        help='stream server logs to the terminal and enable llama-server -v')
     parser.add_argument('--warmup', action='store_true',
                         help='allow llama-server startup warmup')
     parser.add_argument('--timeout', type=int, default=900)
@@ -160,6 +163,8 @@ def main():
         cmd += ['-c', str(args.ctx), '-np', '1', '-t', '12', '-tb', '12',
                 '--no-cont-batching', '--cache-prompt', '--no-mmap',
                 '--host', args.host, '--port', str(args.port), '--no-webui', '--jinja']
+        if args.verbose:
+            cmd.append('--verbose')
         if not args.warmup:
             cmd.insert(cmd.index('--no-mmap'), '--no-warmup')
     with open(str(target) + '.meta.json', 'x') as out:
@@ -189,7 +194,12 @@ def main():
     deadline = time.monotonic() + args.timeout if args.timeout else None
     xs = Path('/home/arian/.xsession-errors')
     try:
-        with open(str(target) + '.out', 'x') as stdout, open(str(target) + '.err', 'x') as stderr:
+        with ExitStack() as logs:
+            if args.verbose:
+                stdout = stderr = None
+            else:
+                stdout = logs.enter_context(open(str(target) + '.out', 'x'))
+                stderr = logs.enter_context(open(str(target) + '.err', 'x'))
             child = subprocess.Popen(cmd, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
             print(f'job pid={child.pid} tag={args.tag}', flush=True)
             if args.mode == 'server' or (args.mode == 'serve' and prewarm):
