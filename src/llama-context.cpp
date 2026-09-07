@@ -12,6 +12,7 @@
 #include "llama-ext.h"
 #include "llama.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -28,6 +29,28 @@ static llm_graph_type ctx_type_to_graph_type(llama_context_type ctx_type) {
         case LLAMA_CONTEXT_TYPE_MTP    : return LLM_GRAPH_TYPE_DECODER_MTP;
     }
     throw std::runtime_error("Unsupported ctx type");
+}
+
+static size_t serving_plan_cache_limit() {
+    const char * serving = getenv("GGML_CUDA_AW_SERVE");
+    if (serving == nullptr || strcmp(serving, "1") != 0) {
+        return 0;
+    }
+    const char * enabled = getenv("GGML_CUDA_AW_SERVE_PLAN_CACHE");
+    if (enabled == nullptr || strcmp(enabled, "1") != 0) {
+        return 0;
+    }
+    // Cached tensor descriptors may retain offsets into the reserved compute
+    // arenas.  Require the serving full-reserve contract so a shape switch
+    // cannot free/reallocate those arenas underneath an older plan.
+    const char * full_reserve = getenv("GGML_CUDA_AW_SERVE_RESERVE_FULL");
+    if (full_reserve == nullptr || strcmp(full_reserve, "1") != 0) {
+        return 0;
+    }
+
+    const char * value = getenv("GGML_CUDA_AW_SERVE_PLAN_CACHE_SIZE");
+    const int requested = value != nullptr ? atoi(value) : 4;
+    return (size_t) std::clamp(requested, 1, 8);
 }
 
 llama_context::llama_context(
@@ -465,6 +488,10 @@ void llama_context::sched_reserve() {
     LLAMA_LOG_INFO("%s: reserving ...\n", __func__);
 
     synchronize();
+    // Scheduler reservation can replace the state-backed graph buffers.  Do
+    // not carry a suffix-copy baseline across that storage generation change.
+    ggml_backend_meta_aw_invalidate_serving_state();
+    clear_serving_plan_cache();
 
     const int64_t t_start_us = ggml_time_us();
 
@@ -785,6 +812,15 @@ llama_memory_t llama_context::get_memory() const {
     return memory.get();
 }
 
+void llama_context::clear_serving_plan_cache() {
+    for (auto & plan : serving_plan_cache) {
+        if (plan) {
+            plan->reset();
+        }
+    }
+    serving_plan_cache.clear();
+}
+
 bool llama_context::memory_update(bool optimize) {
     if (!memory) {
         return false;
@@ -814,6 +850,11 @@ bool llama_context::memory_update(bool optimize) {
         // TODO: change the mctx->apply() to return information if a graph reserve is needed
         //       reset the graph result only if the memory module did reset the scheduler
         gf_res_prev->reset();
+        // Memory-module updates can move, compact, or restore state without
+        // going through the public sequence mutation wrappers.  They must
+        // invalidate the serving KV suffix baseline before the next graph.
+        ggml_backend_meta_aw_invalidate_serving_state();
+        clear_serving_plan_cache();
 
         if (!mctx->apply()) {
             LLAMA_LOG_ERROR("%s: failed to apply memory update\n", __func__);
@@ -1360,7 +1401,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
-    const auto gparams = graph_params(res, ubatch, mctx, gtype);
+    auto gparams = graph_params(res, ubatch, mctx, gtype);
     const int64_t t_ready = now();
     int64_t t_built = t_ready;
     int64_t t_allocated = t_ready;
@@ -1377,22 +1418,62 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         n_reused++;
     } else {
-        res->reset();
+        bool plan_cache_hit = false;
+        const size_t plan_cache_limit = serving_plan_cache_limit();
+        const int64_t max_nodes = res->get_max_nodes();
+
+        // Retain only graph metadata and input bindings.  The active
+        // scheduler remains single-plan: selecting an entry below still
+        // resets and reallocates it, so no second activation arena is kept.
+        if (!graph_reuse_disable && plan_cache_limit > 0 && res->has_graph()) {
+            if (serving_plan_cache.size() >= plan_cache_limit) {
+                serving_plan_cache.front()->reset();
+                serving_plan_cache.erase(serving_plan_cache.begin());
+            }
+            serving_plan_cache.emplace_back(std::move(gf_res_prev));
+
+            for (auto it = serving_plan_cache.begin(); it != serving_plan_cache.end(); ++it) {
+                if (!(*it)->can_reuse(gparams)) {
+                    continue;
+                }
+
+                gf_res_prev = std::move(*it);
+                serving_plan_cache.erase(it);
+                res = gf_res_prev.get();
+                gf = res->get_gf();
+                gparams.res = res;
+                plan_cache_hit = true;
+                LLAMA_LOG_DEBUG("%s: serving graph-plan cache hit (entries=%zu)\n",
+                        __func__, serving_plan_cache.size());
+                break;
+            }
+        }
+
+        if (!plan_cache_hit) {
+            if (!gf_res_prev) {
+                gf_res_prev.reset(new llm_graph_result(max_nodes));
+                res = gf_res_prev.get();
+            }
+            res->reset();
+            gparams.res = res;
+        }
 
         ggml_backend_sched_reset(sched.get());
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
 
-        //const auto t_start_us = ggml_time_us();
+        if (!plan_cache_hit) {
+            //const auto t_start_us = ggml_time_us();
 
-        gf = model.build_graph(gparams);
-        t_built = now();
+            gf = model.build_graph(gparams);
+            t_built = now();
 
-        //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+            //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
-        if (!gf) {
-            LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
-            ret = GGML_STATUS_FAILED;
-            return nullptr;
+            if (!gf) {
+                LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
+                ret = GGML_STATUS_FAILED;
+                return nullptr;
+            }
         }
 
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
@@ -1922,6 +2003,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
                 LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
 
+                ggml_backend_meta_aw_invalidate_serving_state_from(pos_min[s]);
                 memory->seq_rm(s, pos_min[s], -1);
             }
 
@@ -3911,6 +3993,7 @@ void llama_memory_clear(llama_memory_t mem, bool data) {
         return;
     }
 
+    ggml_backend_meta_aw_invalidate_serving_state();
     mem->clear(data);
 }
 
@@ -3923,6 +4006,11 @@ bool llama_memory_seq_rm(
         return true;
     }
 
+    if (p1 >= 0) {
+        ggml_backend_meta_aw_invalidate_serving_state();
+    } else {
+        ggml_backend_meta_aw_invalidate_serving_state_from(p0);
+    }
     return mem->seq_rm(seq_id, p0, p1);
 }
 
@@ -3936,6 +4024,7 @@ void llama_memory_seq_cp(
         return;
     }
 
+    ggml_backend_meta_aw_invalidate_serving_state();
     mem->seq_cp(seq_id_src, seq_id_dst, p0, p1);
 }
 
@@ -3946,6 +4035,7 @@ void llama_memory_seq_keep(
         return;
     }
 
+    ggml_backend_meta_aw_invalidate_serving_state();
     mem->seq_keep(seq_id);
 }
 
@@ -3959,6 +4049,7 @@ void llama_memory_seq_add(
         return;
     }
 
+    ggml_backend_meta_aw_invalidate_serving_state();
     mem->seq_add(seq_id, p0, p1, delta);
 }
 
@@ -3972,6 +4063,7 @@ void llama_memory_seq_div(
         return;
     }
 
+    ggml_backend_meta_aw_invalidate_serving_state();
     mem->seq_div(seq_id, p0, p1, d);
 }
 
@@ -4045,12 +4137,14 @@ size_t llama_state_get_data(llama_context * ctx, uint8_t * dst, size_t size) {
 // Sets the state reading from the specified source address
 size_t llama_state_set_data(llama_context * ctx, const uint8_t * src, size_t size) {
     ctx->synchronize();
+    ggml_backend_meta_aw_invalidate_serving_state();
 
     return ctx->state_set_data(src, size);
 }
 
 bool llama_state_load_file(llama_context * ctx, const char * path_session, llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out) {
     ctx->synchronize();
+    ggml_backend_meta_aw_invalidate_serving_state();
 
     try {
         return ctx->state_load_file(path_session, tokens_out, n_token_capacity, n_token_count_out);
@@ -4094,6 +4188,7 @@ size_t llama_state_seq_get_data_ext(llama_context * ctx, uint8_t * dst, size_t s
 }
 size_t llama_state_seq_set_data_ext(llama_context * ctx, const uint8_t * src, size_t size, llama_seq_id seq_id, llama_state_seq_flags flags) {
     ctx->synchronize();
+    ggml_backend_meta_aw_invalidate_serving_state();
 
     return ctx->state_seq_set_data(seq_id, src, size, flags);
 }
@@ -4111,6 +4206,7 @@ size_t llama_state_seq_save_file(llama_context * ctx, const char * filepath, lla
 
 size_t llama_state_seq_load_file(llama_context * ctx, const char * filepath, llama_seq_id dest_seq_id, llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out) {
     ctx->synchronize();
+    ggml_backend_meta_aw_invalidate_serving_state();
 
     try {
         return ctx->state_seq_load_file(dest_seq_id, filepath, tokens_out, n_token_capacity, n_token_count_out);

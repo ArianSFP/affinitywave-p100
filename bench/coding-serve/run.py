@@ -211,10 +211,11 @@ def main():
                 if args.mode == 'server':
                     probe = executor.submit(
                         run_probe, args.port, args.suite, target, args.ctx,
-                        probe_stop, prewarm)
+                        probe_stop, prewarm, args.host)
                 else:
                     probe = executor.submit(
-                        prewarm_server, args.port, prewarm, args.ctx, probe_stop)
+                        prewarm_server, args.port, prewarm, args.ctx, probe_stop,
+                        args.host)
             while child.poll() is None:
                 if probe is not None and probe.done():
                     probe.result()

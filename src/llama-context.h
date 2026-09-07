@@ -76,6 +76,10 @@ struct llama_context {
     // return true if the memory was updated
     bool memory_update(bool optimize);
 
+    // Drop retained serving graph metadata when scheduler or memory storage
+    // generation changes.  The cache never owns backend activation arenas.
+    void clear_serving_plan_cache();
+
     enum llama_pooling_type pooling_type() const;
 
     float * get_logits();
@@ -362,6 +366,10 @@ private:
 
     llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
+    // Bounded metadata-only cache for alternating serving shapes.  Each entry
+    // retains its graph/input descriptors, while scheduler allocation remains
+    // single-plan and is rebuilt when an entry is selected.
+    std::vector<llm_graph_result_ptr> serving_plan_cache;
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

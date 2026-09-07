@@ -33,6 +33,8 @@ struct ggml_backend_meta_buffer;
 struct ggml_backend_meta;
 
 static thread_local int64_t ggml_backend_meta_aw_current_tokens = 0;
+static std::atomic<uint64_t> ggml_backend_meta_aw_state_epoch{1};
+static std::atomic<int64_t> ggml_backend_meta_aw_last_canonical_tokens{0};
 
 static bool ggml_backend_meta_aw_serving() {
     const char * value = getenv("GGML_CUDA_AW_SERVE");
@@ -44,6 +46,32 @@ int64_t ggml_backend_meta_set_affinity_wave_tokens(int64_t n_tokens) {
     const int64_t previous = ggml_backend_meta_aw_current_tokens;
     ggml_backend_meta_aw_current_tokens = n_tokens;
     return previous;
+}
+
+void ggml_backend_meta_aw_invalidate_serving_state(void) {
+    ggml_backend_meta_aw_last_canonical_tokens.store(0, std::memory_order_relaxed);
+    ggml_backend_meta_aw_state_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ggml_backend_meta_aw_invalidate_serving_state_from(const int64_t position) {
+    const int64_t canonical_tokens =
+            ggml_backend_meta_aw_last_canonical_tokens.load(std::memory_order_relaxed);
+    if (position < 0) {
+        ggml_backend_meta_aw_invalidate_serving_state();
+    } else if (position < canonical_tokens) {
+        // Sequence removal discards only the suffix. Keep the known-valid
+        // prefix and make the next append copy start at the removal point.
+        // Small prefixes are conservatively invalidated: a server request with
+        // cache_prompt=false can reuse a slot while replacing that prefix, and
+        // this backend cannot observe the request's token identity. Long cache
+        // turns and the small padded boundary trim remain eligible.
+        const bool likely_cached_prefix = position >= 4096 || canonical_tokens - position <= 4;
+        if (likely_cached_prefix) {
+            ggml_backend_meta_aw_last_canonical_tokens.store(position, std::memory_order_relaxed);
+        } else {
+            ggml_backend_meta_aw_invalidate_serving_state();
+        }
+    }
 }
 
 static int64_t ggml_backend_meta_aw_active_tokens() {
@@ -2544,6 +2572,9 @@ struct ggml_backend_meta_context {
     uint64_t                    uid           = 0;
     int64_t                     aw_precaptured_tokens = -1;
     std::unordered_set<uint64_t> aw_precaptured_signatures;
+    bool                        aw_canonical_state_valid = false;
+    int64_t                     aw_canonical_tokens = 0;
+    uint64_t                    aw_canonical_epoch = 0;
     std::vector<ggml_backend_buffer_ptr> aw_input_snapshot_buffers;
     std::unique_ptr<submit_pool> submit;
 
@@ -2831,6 +2862,31 @@ static void ggml_backend_meta_aw_kv_prefix(ggml_tensor & root, const ggml_tensor
     root.nb[3] = root.nb[2];
 }
 
+// Restrict a canonical KV copy to newly appended rows when the destination was
+// fully canonicalized by the preceding serving request. Unsupported layouts
+// deliberately fall back to the existing full-copy path.
+static bool ggml_backend_meta_aw_kv_suffix(
+        ggml_tensor & src, ggml_tensor & dst, const int64_t previous_tokens) {
+    if (previous_tokens <= 0 || src.type != dst.type ||
+            src.ne[2] != 1 || src.ne[3] != 1 ||
+            src.ne[1] != dst.ne[1] || src.ne[1] <= previous_tokens ||
+            src.ne[0] != dst.ne[0] || src.nb[0] != dst.nb[0] || src.nb[1] != dst.nb[1] ||
+            src.nb[2] != dst.nb[2] || src.nb[3] != dst.nb[3] ||
+            src.nb[1] == 0 || !ggml_is_contiguous(&src) || !ggml_is_contiguous(&dst)) {
+        return false;
+    }
+    const int64_t suffix_tokens = src.ne[1] - previous_tokens;
+    src.data = (char *) src.data + (size_t) previous_tokens * src.nb[1];
+    dst.data = (char *) dst.data + (size_t) previous_tokens * dst.nb[1];
+    src.ne[1] = suffix_tokens;
+    dst.ne[1] = suffix_tokens;
+    src.nb[2] = src.nb[1] * src.ne[1];
+    dst.nb[2] = dst.nb[1] * dst.ne[1];
+    src.nb[3] = src.nb[2];
+    dst.nb[3] = dst.nb[2];
+    return ggml_are_same_layout(&src, &dst);
+}
+
 struct ggml_backend_meta_aw_cell {
     int layer;
     int begin;
@@ -3016,6 +3072,18 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     GGML_ASSERT(cgraph->grads == nullptr);
     const size_t n_backends = ggml_backend_meta_n_backends(backend);
     ggml_backend_meta_context * backend_ctx = (ggml_backend_meta_context *) backend->context;
+    const uint64_t state_epoch = ggml_backend_meta_aw_state_epoch.load(std::memory_order_relaxed);
+    if (backend_ctx->aw_canonical_epoch != state_epoch) {
+        backend_ctx->aw_canonical_state_valid = false;
+        backend_ctx->aw_canonical_tokens = 0;
+        backend_ctx->aw_canonical_epoch = state_epoch;
+    } else if (backend_ctx->aw_canonical_state_valid) {
+        const int64_t trimmed_tokens =
+                ggml_backend_meta_aw_last_canonical_tokens.load(std::memory_order_relaxed);
+        if (trimmed_tokens != backend_ctx->aw_canonical_tokens) {
+            backend_ctx->aw_canonical_tokens = trimmed_tokens;
+        }
+    }
 
     // [TAG_META_SUBMIT] engage per-device submission threads only for prefill-sized MoE graphs:
     // decode-sized graphs measured NEGATIVE under a threaded driver (scheduler jitter on tiny
@@ -5370,11 +5438,33 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 }
                 }
                 }
-                for (size_t j = 0; j < n_backends; ++j) {
-                    ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+                const char * publish_overlap_env = getenv("GGML_CUDA_AW_SERVE_PUBLISH_OVERLAP");
+                const bool publish_overlap = serving && publish_overlap_env != nullptr &&
+                        strcmp(publish_overlap_env, "1") == 0;
+                if (publish_overlap) {
+                    // The owner stream is also the source stream for the
+                    // canonical copies.  CUDA's async copy path orders the
+                    // copy after the owner's queued work, while destination
+                    // synchronization prevents overwriting a lane that is
+                    // still reading its prior state.  This removes only the
+                    // redundant owner-side barrier; non-CUDA backends retain
+                    // their internal synchronous fallback.
+                    for (size_t j = 0; j + 1 < n_backends; ++j) {
+                        ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+                    }
+                } else {
+                    for (size_t j = 0; j < n_backends; ++j) {
+                        ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
+                    }
                 }
                 if (pass == warmup_passes) {
                     if (serving) {
+                        const char * suffix_env = getenv("GGML_CUDA_AW_SERVE_KV_SUFFIX");
+                        const bool suffix_requested = suffix_env != nullptr &&
+                                strcmp(suffix_env, "1") == 0 &&
+                                backend_ctx->aw_canonical_state_valid &&
+                                !resets_recurrent_state && backend_ctx->aw_canonical_tokens > 0;
+                        int64_t canonical_tokens = 0;
                         auto canonical_view = [&](size_t lane, ggml_tensor * tensor) {
                             size_t view_offs = 0;
                             ggml_tensor * root = tensor;
@@ -5398,7 +5488,15 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         for (const auto & cell : cells) {
                             for (size_t j = 0; j < owner; ++j) {
                                 auto & dst_config = backend_ctx->backend_configs[j];
-                                auto copy_canonical = [&](ggml_tensor * src, ggml_tensor * dst) {
+                                auto copy_canonical = [&](ggml_tensor * src, ggml_tensor * dst,
+                                        bool allow_suffix) {
+                                    if (allow_suffix && suffix_requested &&
+                                            ggml_backend_meta_aw_kv_suffix(
+                                                *src, *dst, backend_ctx->aw_canonical_tokens)) {
+                                        ggml_backend_tensor_copy_async(src_config.backend, dst_config.backend, src, dst);
+                                        pass_corridor_bytes += ggml_nbytes(dst);
+                                        return;
+                                    }
                                     GGML_ASSERT(ggml_are_same_layout(src, dst));
                                     ggml_backend_tensor_copy_async(src_config.backend, dst_config.backend, src, dst);
                                     pass_corridor_bytes += ggml_nbytes(dst);
@@ -5408,8 +5506,8 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                                     ggml_tensor dst_conv = canonical_view(j, dst_config.nodes[cell.conv_state_update]);
                                     ggml_tensor src_state = canonical_view(owner, src_config.nodes[cell.state_update]->src[1]);
                                     ggml_tensor dst_state = canonical_view(j, dst_config.nodes[cell.state_update]->src[1]);
-                                    copy_canonical(&src_conv, &dst_conv);
-                                    copy_canonical(&src_state, &dst_state);
+                                    copy_canonical(&src_conv, &dst_conv, false);
+                                    copy_canonical(&src_state, &dst_state, false);
                                 } else {
                                     ggml_tensor * src_attn = src_config.nodes[cell.flash_attn];
                                     ggml_tensor * dst_attn = dst_config.nodes[cell.flash_attn];
@@ -5421,14 +5519,21 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                                     ggml_backend_meta_aw_kv_prefix(dst_k, dst_attn->src[1]);
                                     ggml_backend_meta_aw_kv_prefix(src_v, src_attn->src[2]);
                                     ggml_backend_meta_aw_kv_prefix(dst_v, dst_attn->src[2]);
-                                    copy_canonical(&src_k, &dst_k);
-                                    copy_canonical(&src_v, &dst_v);
+                                    canonical_tokens = std::max(canonical_tokens, src_k.ne[1]);
+                                    copy_canonical(&src_k, &dst_k, true);
+                                    copy_canonical(&src_v, &dst_v, true);
                                 }
                             }
                         }
                         for (size_t j = 0; j < owner; ++j) {
                             ggml_backend_synchronize(backend_ctx->backend_configs[j].backend);
                         }
+                        backend_ctx->aw_canonical_state_valid = canonical_tokens > 0;
+                        backend_ctx->aw_canonical_tokens = canonical_tokens;
+                        backend_ctx->aw_canonical_epoch =
+                                ggml_backend_meta_aw_state_epoch.load(std::memory_order_relaxed);
+                        ggml_backend_meta_aw_last_canonical_tokens.store(
+                                canonical_tokens, std::memory_order_relaxed);
                     }
                     elapsed_ms = (ggml_time_us() - pass_begin_us) / 1000.0;
                     corridor_bytes = pass_corridor_bytes;

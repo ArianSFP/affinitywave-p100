@@ -791,6 +791,10 @@ public:
 
     ggml_cgraph  * get_gf()  const { return gf; }
     ggml_context * get_ctx() const { return ctx_compute.get(); }
+    bool has_graph() const {
+        return t_logits != nullptr || t_embd != nullptr ||
+               t_embd_pooled != nullptr || t_h_nextn != nullptr;
+    }
 
     int64_t get_max_nodes() const;
 

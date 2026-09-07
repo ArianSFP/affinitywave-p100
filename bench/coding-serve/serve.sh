@@ -10,6 +10,10 @@ exec python3 "$project_dir/bench/coding-serve/run.py" \
     --verbose \
     --env GGML_CUDA_AW_PARTIAL=serve-auto \
     --env GGML_CUDA_AW_SERVE_KV_PREFIX=1 \
+    --env GGML_CUDA_AW_SERVE_KV_SUFFIX=1 \
+    --env GGML_CUDA_AW_SERVE_PLAN_CACHE=1 \
+    --env GGML_CUDA_AW_SERVE_PLAN_CACHE_SIZE=4 \
+    --env GGML_CUDA_AW_SERVE_PUBLISH_OVERLAP=1 \
     --env GGML_CUDA_AW_PRECAPTURE=0 \
     --env GGML_CUDA_AW_SERVE_RESERVE_FULL=1 \
     --env GGML_CUDA_AW_SERVE_TINY_MMVQ=1 "$@"

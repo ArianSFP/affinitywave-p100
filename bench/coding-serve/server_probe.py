@@ -60,6 +60,23 @@ def completion(base, prompt, cache, predict=4):
                 content=''.join(content), tokens=tokens)
 
 
+def _probe_host(host):
+    """Return an address clients can use to reach a server bind address."""
+    # Wildcard addresses are valid listen addresses but are not routable
+    # destinations.  Probe through loopback in that case; otherwise use the
+    # configured address so LAN-bound servers are checked on the same path as
+    # real clients.
+    if host in ('0.0.0.0', '::', ''):
+        return '127.0.0.1'
+    if ':' in host and not host.startswith('['):
+        return f'[{host}]'
+    return host
+
+
+def _base(host, port):
+    return f'http://{_probe_host(host)}:{port}'
+
+
 def _wait_ready(base, stop_event=None):
     deadline = time.monotonic() + 300
     while True:
@@ -80,8 +97,8 @@ def _fixture(base):
         return json.load(response)['tokens']
 
 
-def prewarm_server(port, sizes, ctx, stop_event=None):
-    base = f'http://127.0.0.1:{port}'
+def prewarm_server(port, sizes, ctx, stop_event=None, host='127.0.0.1'):
+    base = _base(host, port)
     _wait_ready(base, stop_event)
     source = _fixture(base)
     for size in sizes:
@@ -90,8 +107,8 @@ def prewarm_server(port, sizes, ctx, stop_event=None):
         completion(base, source[:size], False, predict=4)
 
 
-def run_probe(port, suite, target, ctx, stop_event=None, prewarm=()):
-    base = f'http://127.0.0.1:{port}'
+def run_probe(port, suite, target, ctx, stop_event=None, prewarm=(), host='127.0.0.1'):
+    base = _base(host, port)
     _wait_ready(base, stop_event)
     source = _fixture(base)
     if suite == 'smoke':

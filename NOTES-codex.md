@@ -192,3 +192,112 @@ normal arithmetic. Do not implement a blind small-token fallback.
   2885.23 tok/s (samples 2881.26-2889.37). CPU harness has 12/12 tests pass;
   shell syntax and diff whitespace checks pass. No commits, pushes, or service
   replacement were performed.
+
+## Web UI serving incident / 2026-09-07
+
+- The first UI server did not suffer a CUDA or generation crash. It completed
+  the user prompt and then exited when the wrapper's prewarm future failed.
+  `server_probe._wait_ready()` was hard-coded to `127.0.0.1`, while the server
+  was intentionally bound to `192.168.1.37`; the probe therefore waited its
+  300-second deadline and `run.py` cleaned up the healthy child with SIGTERM.
+- Fixed `server_probe.py` to derive its probe URL from `--host`, using loopback
+  only for wildcard binds and formatting IPv6 literals. `run.py` now passes the
+  configured host to both server probe paths.
+- Corrected UI restart (`webui-fixed-20260907`) passed the five-shape prewarm,
+  returned HTTP 200 for `/`, served `{"status":"ok"}` at `/health`, and
+  completed a real `/v1/chat/completions` request without exiting. The live
+  process remains bound to `192.168.1.37:18097`.
+
+## Canonical KV suffix transport / 2026-09-07
+
+- Added `GGML_CUDA_AW_SERVE_KV_SUFFIX=1`, enabled by `bench/coding-serve/serve.sh`.
+  On continued serving turns, the canonical owner-to-lane K/V fanout now copies
+  only rows after the last known-valid prefix. Recurrent convolution/GDN state,
+  reset paths, non-contiguous or unsupported layouts, and all non-serving paths
+  retain the existing full-copy behavior.
+- Added a serving-state epoch and mutation hooks. Full clears, sequence movement,
+  finite-range removal, rollback/state restore and other state replacement
+  invalidate the marker. Suffix removal keeps only a conservative long prefix
+  (>=4096 tokens) or a <=4-token padded boundary and moves the copy baseline to
+  that position; this prevents `cache_prompt=false` short-slot reuse from
+  inheriting stale K/V rows.
+- Scheduler reservation and internal memory-module updates also invalidate the
+  marker, since either path can replace or compact state-backed buffers without
+  passing through the public sequence mutation wrappers.
+- Same-build transition validation showed byte-identical logits through all
+  fresh/short and `cached65`/`cached130` append boundaries. Independent long
+  reset runs vary at later boundaries due existing cross-run numerical variance;
+  the suffix path is inactive across those reset boundaries after epoch hooks.
+- Controlled HTTP A/B before the epoch refinement reduced long cached corridor
+  traffic from 1366.9 MiB to 886.9 MiB at suffix 64 and improved prompt time
+  approximately 650.6 -> 606.9 ms; after padded-boundary handling, the guarded
+  2048-token smoke reduced traffic 646.9 -> 527.1 MiB while preserving the
+  transport/chat checks. Fresh prompt rates were unchanged within run noise.
+- Rebuilt `libggml-base.so`, `libggml-cuda.so`, `libggml.so`, and `libllama.so`
+  successfully. The complete application target remains blocked by unrelated
+  pre-existing `common/speculative.cpp` edits in this shared worktree; no such
+  files were modified here. No commit/push/PR was made.
+- After the final invalidation-only hardening, the rebuilt `llama` target and
+  CPU harness passed again. A new four-GPU smoke could not start because the
+  rig's `nvidia-smi --query-compute-apps` temporarily returned driver
+  communication status 9; the guarded smoke above remains the latest GPU run.
+
+## Bounded serving plan reuse / 2026-09-07
+
+- Added an opt-in bounded metadata-only graph-plan cache in
+  `llama_context::process_ubatch()`, enabled by `serve.sh` with four entries.
+  Entries retain compatible graph/input descriptors but never duplicate GPU
+  activation arenas; shape switches still reset and allocate the single active
+  scheduler. The cache requires `GGML_CUDA_AW_SERVE_RESERVE_FULL=1` and is
+  cleared on scheduler reservation or internal memory-module updates.
+- Added `GGML_CUDA_AW_SERVE_PUBLISH_OVERLAP=1`. The final canonical publication
+  now synchronizes destination lanes before copying but leaves the owner source
+  stream ordered asynchronously, removing only the redundant owner-side
+  barrier. The existing CUDA copy event path and destination synchronization
+  preserve ordering; non-CUDA copies retain their synchronous fallback.
+- These two changes were initially blocked from GPU qualification because the
+  managed sandbox lacked `/dev/nvidia*`; they still require paired A/B timing
+  and the established byte/PPL gates before claiming a serving-rate
+  improvement.
+- Host-namespace qualification became available after confirming that the
+  sandbox, not the host, lacked `/dev/nvidia*`. The guarded four-P100 smoke
+  (`plan-cache-final-smoke-20260907`) passed fresh 128/513/1025, cached 65/130,
+  and chat API probes with the plan cache and publication-overlap flags enabled;
+  all GPU processes exited cleanly. Its cached-65 prompt was 660.8 ms
+  (98.36 tok/s), but this is not a paired A/B rate claim.
+
+## Upstream P100 patch 06 / 2026-09-07
+
+- Incorporated `06-mmq-mul-mat-id-sm60.patch` from
+  `shinbunbun/llama-cpp-p100-patches`. The change is confined to
+  `ggml/src/ggml-cuda/mmq.cu`: Pascal now permits MMQ for `MUL_MAT_ID`
+  (MoE) while ordinary `MUL_MAT` remains on the existing cuBLAS path; other
+  pre-DP4A architectures remain excluded.
+- The rebuilt `libggml-cuda.so`, `libggml.so`, and `libllama.so` compile
+  successfully. The full `llama-bench` target remains blocked by the
+  unrelated pre-existing `common/speculative.cpp` errors, so validation used
+  the existing benchmark executable with the rebuilt shared libraries.
+- A guarded 4-P100 8128-token run completed cleanly:
+  `patch06-p100-qualification-8128-20260907`, `avg_ts=2896.223626`,
+  `stddev_ts=5.552398` tok/s (samples 2897.72, 2889.12, 2902.5, 2895.56).
+  This is within normal run variance of the prior 2900.109901 result; no
+  regression is established.
+- The current production serving environment uses expert-parallel and the
+  device-built MoE plan, both of which intentionally bypass this upstream
+  fallback (`MUL_MAT_ID` is EP-gated and the plan returns earlier). Therefore
+  patch 06 is incorporated and available for the non-EP/plan-disabled MoE
+  path, but it is not claimed as an active gain on the current CohortRail
+  serving path.
+
+## P100 qualification recovery / 2026-09-07
+
+- Host-level guarded fixed-shape qualification (`p100-qualification-8128-20260907`)
+  completed on all four Tesla P100s after the managed sandbox recovered no
+  `/dev/nvidia*` nodes. Qwen3.6-35B-A3B Q8_0, CUDA tensor split, FA enabled,
+  8128 prompt tokens, four repeats: `avg_ts=2900.109901`,
+  `stddev_ts=3.095575` tok/s; samples `2899.7, 2897.03, 2904.4, 2899.3`.
+- This is 12.154 tok/s (0.417%) below the 2912.264 documented checkpoint and
+  is the current measured qualified-rate result. The run exited cleanly with
+  no remaining GPU compute clients. The higher internal service-phase timing
+  (~2967 tok/s) is diagnostic only; it is not substituted for `llama-bench`'s
+  qualified rate. No new PPL/byte-identity gate was run in this rate check.
