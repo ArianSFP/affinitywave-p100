@@ -87,6 +87,8 @@ def main():
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--ctx', type=int, default=16384)
     parser.add_argument('--port', type=int, default=18097)
+    parser.add_argument('--host', default='127.0.0.1',
+                        help='server bind address; use 0.0.0.0 for LAN access')
     parser.add_argument('--suite', choices=['smoke', 'matrix', 'short', 'soak'], default='smoke')
     parser.add_argument('--prewarm', default='',
                         help='comma-separated fresh prompt sizes to prewarm before probing')
@@ -157,7 +159,7 @@ def main():
             parser.error('the fixed-shape qualified path is not a server configuration')
         cmd += ['-c', str(args.ctx), '-np', '1', '-t', '12', '-tb', '12',
                 '--no-cont-batching', '--cache-prompt', '--no-mmap',
-                '--host', '127.0.0.1', '--port', str(args.port), '--no-webui', '--jinja']
+                '--host', args.host, '--port', str(args.port), '--no-webui', '--jinja']
         if not args.warmup:
             cmd.insert(cmd.index('--no-mmap'), '--no-warmup')
     with open(str(target) + '.meta.json', 'x') as out:
