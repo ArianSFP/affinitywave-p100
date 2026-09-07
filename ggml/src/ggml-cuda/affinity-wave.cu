@@ -9374,6 +9374,7 @@ struct aw_live_state {
 };
 
 static std::array<std::array<aw_live_state, AW_GPU_COUNT>, AW_GPU_COUNT> aw_live_states;
+static std::array<std::array<aw_live_state, AW_GPU_COUNT>, AW_GPU_COUNT> aw_live_short_f32_states;
 
 struct aw_diagonal_scratch {
     int device = -1;
@@ -12683,6 +12684,24 @@ int ggml_cuda_affinity_wave_live_service(
                 n_cells < 1 || n_cells > AW_GPU_COUNT) {
             throw std::runtime_error("invalid live AffinityWave service request");
         }
+        const char * partial_mode = getenv("GGML_CUDA_AW_PARTIAL");
+        const bool serve_auto = partial_mode != nullptr && strcmp(partial_mode, "serve-auto") == 0;
+        if (serve_auto && !aw_env_on(getenv("GGML_CUDA_AW_SERVE"))) {
+            throw std::runtime_error("serve-auto partials require AW_SERVE");
+        }
+        int serving_lane_tokens = 0;
+        for (int cell = 0; cell < n_cells; ++cell) {
+            serving_lane_tokens = std::max(serving_lane_tokens, cells[cell].tokens);
+        }
+        // Preserve the accepted BF16 512-token checkpoint and the long-prompt
+        // path. Shorter shapes use the native-reference-qualified FP32 path.
+        const bool bf16_partial = partial_mode != nullptr &&
+                (strcmp(partial_mode, "bf16") == 0 ||
+                 (serve_auto && (serving_lane_tokens == 128 || serving_lane_tokens >= 512)));
+        // Keep small legacy allocations separate from the long panel arena:
+        // otherwise historical large token capacity inflates the FP32 path.
+        auto & aw_live_states = serve_auto && !bf16_partial ?
+                aw_live_short_f32_states : ::aw_live_states;
         const char * service_env = getenv("GGML_CUDA_AW_SERVICE");
         if (service_env != nullptr &&
                 strcmp(service_env, "legacy") != 0 &&
@@ -12703,6 +12722,7 @@ int ggml_cuda_affinity_wave_live_service(
                     "GGML_CUDA_AW_DIAGONAL_SERVICE must be 'legacy', 'panel512', 'panel1024', or 'panel2048'");
         }
         const bool diagonal_panel =
+                (!serve_auto || bf16_partial) &&
                 diagonal_service_env != nullptr &&
                 (strcmp(diagonal_service_env, "panel512") == 0 ||
                  strcmp(diagonal_service_env, "panel1024") == 0 ||
@@ -12811,8 +12831,6 @@ int ggml_cuda_affinity_wave_live_service(
         const bool f16_wire = getenv("GGML_CUDA_AW_WIRE") != nullptr &&
                 strcmp(getenv("GGML_CUDA_AW_WIRE"), "f16") == 0;
         const bool wire16 = bf16_wire || f16_wire;
-        const bool bf16_partial = getenv("GGML_CUDA_AW_PARTIAL") != nullptr &&
-                strcmp(getenv("GGML_CUDA_AW_PARTIAL"), "bf16") == 0;
         const bool nccl_order_sum =
                 bf16_partial &&
                 aw_env_on(getenv("GGML_CUDA_AW_NCCL_ORDER_SUM"));

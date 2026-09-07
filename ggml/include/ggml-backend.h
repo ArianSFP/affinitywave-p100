@@ -393,6 +393,7 @@ extern "C" {
         GGML_BACKEND_SPLIT_AXIS_UNKNOWN = 99,
     };
     GGML_API const char * ggml_backend_meta_split_axis_name(enum ggml_backend_meta_split_axis split_axis);
+    GGML_API int64_t ggml_backend_meta_set_affinity_wave_tokens(int64_t n_tokens);
 
     struct ggml_backend_meta_split_state {
         enum ggml_backend_meta_split_axis axis;

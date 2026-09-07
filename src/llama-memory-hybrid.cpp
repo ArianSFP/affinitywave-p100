@@ -4,6 +4,23 @@
 #include "llama-model.h"
 #include "llama-context.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+
+static uint32_t affinity_wave_split_size(const llama_batch_allocr & balloc, uint32_t n_ubatch) {
+    const char * serve = getenv("GGML_CUDA_AW_SERVE");
+    const char * split = getenv("GGML_CUDA_AW_WAVE_TOKEN_SPLIT");
+    if (serve == nullptr || strcmp(serve, "1") != 0 ||
+            split == nullptr || strcmp(split, "0") == 0) {
+        return n_ubatch;
+    }
+    const uint32_t remaining = balloc.get_n_tokens() - balloc.get_n_used();
+    const uint32_t candidate = std::min(n_ubatch, remaining);
+    const uint32_t bulk = candidate - candidate % 4;
+    return bulk >= 4 ? bulk : candidate;
+}
+
 //
 // llama_memory_hybrid
 //
@@ -73,19 +90,20 @@ llama_memory_context_ptr llama_memory_hybrid::init_batch(llama_batch_allocr & ba
 
         while (true) {
             llama_ubatch ubatch;
+            const uint32_t split_size = affinity_wave_split_size(balloc, n_ubatch);
 
             if (embd_all) {
                 // if all tokens are output, split by sequence
-                ubatch = balloc.split_seq(n_ubatch);
+                ubatch = balloc.split_seq(split_size);
             } else {
                 if (mem_recr->n_rs_seq > 0) {
                     // [TAG_RECURRENT_ROLLBACK_SPLITS]
                     // TODO: recurrent state rollback does not support equal splits
-                    ubatch = balloc.split_seq(n_ubatch);
+                    ubatch = balloc.split_seq(split_size);
                 } else {
                     // Use non-sequential split when KV cache is unified (needed for hellaswag/winogrande/multiple-choice)
                     const bool unified = (mem_attn->get_n_stream() == 1);
-                    ubatch = balloc.split_equal(n_ubatch, !unified);
+                    ubatch = balloc.split_equal(split_size, !unified);
                 }
             }
 

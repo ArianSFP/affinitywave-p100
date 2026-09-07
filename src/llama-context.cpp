@@ -469,7 +469,14 @@ void llama_context::sched_reserve() {
     const int64_t t_start_us = ggml_time_us();
 
     const uint32_t n_seqs = cparams.n_seq_max;
-    const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+    uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+    const char * aw_serve = getenv("GGML_CUDA_AW_SERVE");
+    if (aw_serve != nullptr && strcmp(aw_serve, "1") == 0) {
+        const char * full_reserve = getenv("GGML_CUDA_AW_SERVE_RESERVE_FULL");
+        if (full_reserve == nullptr || strcmp(full_reserve, "1") != 0) {
+            n_tokens = std::min<uint32_t>(n_tokens, 512);
+        }
+    }
 
     const size_t max_nodes = this->graph_max_nodes(n_tokens);
 
@@ -1321,6 +1328,27 @@ bool llama_context::set_adapter_cvec(
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+    const char * aw_serve = getenv("GGML_CUDA_AW_SERVE");
+    if (aw_serve != nullptr && strcmp(aw_serve, "1") == 0 && ubatch.n_seqs_unq != 1) {
+        LLAMA_LOG_ERROR("%s: AW_SERVE currently requires a single sequence\n", __func__);
+        ret = GGML_STATUS_FAILED;
+        return nullptr;
+    }
+    struct aw_token_scope {
+        int64_t previous;
+        aw_token_scope(int64_t n_tokens) :
+                previous(ggml_backend_meta_set_affinity_wave_tokens(n_tokens)) {}
+        ~aw_token_scope() {
+            ggml_backend_meta_set_affinity_wave_tokens(previous);
+        }
+    };
+    aw_token_scope aw_scope(ubatch.n_tokens);
+
+    const char * timing_env = getenv("GGML_CUDA_AW_SERVE_TIMING");
+    const bool timing = timing_env != nullptr && strcmp(timing_env, "1") == 0;
+    auto now = [&]() { return timing ? ggml_time_us() : int64_t(0); };
+    const int64_t t_begin = now();
+
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
@@ -1333,6 +1361,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
+    const int64_t t_ready = now();
+    int64_t t_built = t_ready;
+    int64_t t_allocated = t_ready;
 
     if (!graph_reuse_disable && res->can_reuse(gparams)) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
@@ -1354,6 +1385,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //const auto t_start_us = ggml_time_us();
 
         gf = model.build_graph(gparams);
+        t_built = now();
 
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -1368,6 +1400,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
+        t_allocated = now();
     }
 
     // set the input data for the input tensors
@@ -1380,7 +1413,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
+    const int64_t t_inputs = now();
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+    const int64_t t_done = now();
+    if (timing) {
+        LLAMA_LOG_INFO("AW serving phases tokens=%u ready=%.3f build=%.3f alloc=%.3f inputs=%.3f compute=%.3f total=%.3f ms\n",
+                ubatch.n_tokens, (t_ready-t_begin)/1000.0, (t_built-t_ready)/1000.0,
+                (t_allocated-t_built)/1000.0, (t_inputs-t_allocated)/1000.0,
+                (t_done-t_inputs)/1000.0, (t_done-t_begin)/1000.0);
+    }
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
@@ -2360,6 +2401,24 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
 
 ggml_cgraph * llama_context::graph_reserve(
         uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
+    const char * aw_serve = getenv("GGML_CUDA_AW_SERVE");
+    const char * full_reserve = getenv("GGML_CUDA_AW_SERVE_RESERVE_FULL");
+    const bool serving_reserve = aw_serve != nullptr && strcmp(aw_serve, "1") == 0 &&
+            full_reserve != nullptr && strcmp(full_reserve, "1") == 0;
+    struct reserve_token_scope {
+        bool active;
+        int64_t previous;
+        ~reserve_token_scope() {
+            if (active) {
+                ggml_backend_meta_set_affinity_wave_tokens(previous);
+            }
+        }
+    } token_scope{serving_reserve, serving_reserve ? ggml_backend_meta_set_affinity_wave_tokens(n_tokens) : 0};
+    if (serving_reserve) {
+        // Reserve actual token-lane activations, not a full-vocabulary output
+        // for every prompt token. Runtime requests with more outputs can grow.
+        n_outputs = std::min(n_outputs, n_seqs);
+    }
     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
     GGML_ASSERT(n_outputs >= 1);
 
